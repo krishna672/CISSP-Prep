@@ -16,7 +16,24 @@ const getCombinedQuestions = (): Question[] => {
       console.error("Failed to parse generated questions:", e);
     }
   }
-  return [...staticQuestions, ...generated];
+
+  // Filter out any deleted static/custom question IDs
+  const deletedStored = localStorage.getItem('cissp_deleted_question_ids');
+  let deletedIds: string[] = [];
+  if (deletedStored) {
+    try {
+      deletedIds = JSON.parse(deletedStored);
+    } catch (e) {
+      console.error("Failed to parse deleted question IDs:", e);
+    }
+  }
+
+  const combined = [...staticQuestions, ...generated];
+  if (deletedIds.length > 0) {
+    const deletedSet = new Set(deletedIds);
+    return combined.filter(q => !deletedSet.has(q.id));
+  }
+  return combined;
 };
 
 const QuizDashboard: React.FC = () => {
