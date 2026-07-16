@@ -2,14 +2,12 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as d3 from 'd3';
 import { MindMapNode } from '../types';
-import { ZoomIn, ZoomOut, Maximize, Search, ChevronRight, Sparkles, Loader2, X, Check, Plus } from 'lucide-react';
-import { GoogleGenAI, Type } from "@google/genai";
+import { ZoomIn, ZoomOut, Maximize, Search, ChevronRight } from 'lucide-react';
 
 interface MindMapProps {
   data: MindMapNode;
   selectedNodeId?: string;
   onNodeClick: (node: MindMapNode) => void;
-  onAddNodes?: (parentId: string, newNodes: MindMapNode[]) => void;
 }
 
 type D3Node = d3.HierarchyPointNode<MindMapNode> & {
@@ -19,14 +17,11 @@ type D3Node = d3.HierarchyPointNode<MindMapNode> & {
   id?: any;
 };
 
-const MindMap: React.FC<MindMapProps> = ({ data, selectedNodeId, onNodeClick, onAddNodes }) => {
+const MindMap: React.FC<MindMapProps> = ({ data, selectedNodeId, onNodeClick }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [isSuggesting, setIsSuggesting] = useState(false);
-  const [aiSuggestions, setAiSuggestions] = useState<MindMapNode[] | null>(null);
-  const [selectedSuggestions, setSelectedSuggestions] = useState<Set<string>>(new Set());
   
   const gRef = useRef<d3.Selection<SVGGElement, unknown, null, undefined> | null>(null);
   const rootRef = useRef<D3Node | null>(null);
@@ -210,7 +205,7 @@ const MindMap: React.FC<MindMapProps> = ({ data, selectedNodeId, onNodeClick, on
       const initialTransform = d3.zoomIdentity.translate(100, height / 2).scale(0.8);
       svg.transition().duration(0).call(zoom.transform as any, initialTransform);
     } else {
-      // Re-map hierarchy if data changes (like AI nodes)
+      // Re-map hierarchy if data changes
       const oldRoot = rootRef.current;
       const newRoot = d3.hierarchy<MindMapNode>(data) as unknown as D3Node;
       
@@ -283,79 +278,6 @@ const MindMap: React.FC<MindMapProps> = ({ data, selectedNodeId, onNodeClick, on
     }
   };
 
-  const handleSuggestNodes = async () => {
-    const targetNode = selectedNodeId 
-      ? rootRef.current?.descendants().find(d => d.data.id === selectedNodeId)?.data 
-      : data;
-
-    if (!targetNode) return;
-
-    setIsSuggesting(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `
-        You are a CISSP Knowledge Graph Architect.
-        Context: The user is exploring "${targetNode.label}".
-        Current existing sub-topics: ${targetNode.children?.map(c => c.label).join(", ") || "None"}.
-        
-        TASK: Identify 3 to 5 critical missing professional concepts or technical details from the CISSP Body of Knowledge (CBK) that belong under this branch.
-        
-        Return a JSON array of objects:
-        { id, label, definition, type: 'concept'|'detail', keyAspect }
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING },
-                label: { type: Type.STRING },
-                definition: { type: Type.STRING },
-                type: { type: Type.STRING },
-                keyAspect: { type: Type.STRING },
-              },
-              required: ["id", "label", "definition", "type", "keyAspect"]
-            }
-          }
-        }
-      });
-
-      const raw = JSON.parse(response.text || "[]");
-      const suggestions = raw.map((s: any, idx: number) => ({
-        ...s,
-        id: `ai-${Date.now()}-${idx}`
-      }));
-      setAiSuggestions(suggestions);
-      setSelectedSuggestions(new Set(suggestions.map((s: any) => s.id)));
-    } catch (error) {
-      console.error("AI Node Suggestion Failed:", error);
-    } finally {
-      setIsSuggesting(false);
-    }
-  };
-
-  const confirmAiNodes = () => {
-    if (!aiSuggestions || !onAddNodes || !selectedNodeId) return;
-    const toAdd = aiSuggestions.filter(s => selectedSuggestions.has(s.id));
-    onAddNodes(selectedNodeId, toAdd);
-    setAiSuggestions(null);
-    setSelectedSuggestions(new Set());
-    
-    // Auto-expand to show new findings
-    const targetNode = rootRef.current?.descendants().find(d => d.data.id === selectedNodeId);
-    if (targetNode && targetNode._children) {
-        targetNode.children = targetNode._children;
-        targetNode._children = null;
-        updateStructure(targetNode as D3Node);
-    }
-  };
-
   return (
     <div className="relative w-full h-full bg-[#f8fafc] overflow-hidden" ref={containerRef}>
         <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 w-full max-w-md px-4">
@@ -395,19 +317,6 @@ const MindMap: React.FC<MindMapProps> = ({ data, selectedNodeId, onNodeClick, on
 
         <div className="absolute bottom-8 right-8 z-10 flex flex-col gap-3">
             <div className="flex flex-col gap-1 glass-panel p-1.5 rounded-2xl shadow-2xl border border-slate-200">
-                <button 
-                    className="p-3 hover:bg-indigo-50 active:bg-indigo-100 rounded-xl transition-colors group disabled:opacity-30" 
-                    title="Suggest Nodes (AI)"
-                    disabled={!selectedNodeId || isSuggesting}
-                    onClick={handleSuggestNodes}
-                >
-                    {isSuggesting ? (
-                      <Loader2 className="w-5 h-5 text-indigo-600 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-5 h-5 text-indigo-600 group-hover:scale-110 transition-transform" />
-                    )}
-                </button>
-                <div className="h-px bg-slate-100 mx-2 my-1"></div>
                 <button className="p-3 hover:bg-slate-100 active:bg-slate-200 rounded-xl transition-colors" title="Zoom In" onClick={() => {
                     if(svgRef.current && zoomRef.current) d3.select(svgRef.current).transition().duration(200).call(zoomRef.current.scaleBy as any, 1.3);
                 }}>
@@ -431,62 +340,6 @@ const MindMap: React.FC<MindMapProps> = ({ data, selectedNodeId, onNodeClick, on
         </div>
 
       <svg ref={svgRef} className="mindmap-container" onClick={() => setShowSuggestions(false)}></svg>
-
-      {/* AI Suggestion Modal */}
-      {aiSuggestions && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 md:p-12">
-           <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm animate-in fade-in" onClick={() => setAiSuggestions(null)}></div>
-           <div className="relative w-full max-w-xl bg-white rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95">
-              <div className="p-6 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-                 <div>
-                    <h3 className="text-xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-                       <Sparkles className="w-5 h-5 text-indigo-600" /> AI Concept Injection
-                    </h3>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Select findings to add to branch</p>
-                 </div>
-                 <button onClick={() => setAiSuggestions(null)} className="p-2 hover:bg-white rounded-xl transition-colors"><X className="w-5 h-5 text-slate-400" /></button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scrollbar">
-                 {aiSuggestions.map((s) => (
-                    <button 
-                        key={s.id}
-                        onClick={() => {
-                          const next = new Set(selectedSuggestions);
-                          if (next.has(s.id)) next.delete(s.id);
-                          else next.add(s.id);
-                          setSelectedSuggestions(next);
-                        }}
-                        className={`w-full text-left p-4 rounded-2xl border-2 transition-all flex items-start gap-4 ${
-                          selectedSuggestions.has(s.id) ? 'border-indigo-600 bg-indigo-50/30' : 'border-slate-100 hover:border-slate-200 bg-white'
-                        }`}
-                    >
-                       <div className={`mt-0.5 w-5 h-5 rounded-md flex items-center justify-center shrink-0 border transition-all ${
-                         selectedSuggestions.has(s.id) ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-300'
-                       }`}>
-                          {selectedSuggestions.has(s.id) ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5 text-slate-300" />}
-                       </div>
-                       <div>
-                          <div className="font-black text-slate-900 text-sm mb-1">{s.label}</div>
-                          <div className="text-xs font-medium text-slate-500 line-clamp-2 leading-relaxed">{s.definition}</div>
-                       </div>
-                    </button>
-                 ))}
-              </div>
-
-              <div className="p-6 border-t border-slate-100 bg-white flex justify-end gap-3">
-                 <button onClick={() => setAiSuggestions(null)} className="px-6 py-2.5 rounded-xl text-xs font-black text-slate-500 hover:bg-slate-50">Discard</button>
-                 <button 
-                  onClick={confirmAiNodes}
-                  disabled={selectedSuggestions.size === 0}
-                  className="px-8 py-3 bg-slate-900 text-white rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-600 transition-all shadow-lg disabled:opacity-20"
-                 >
-                   Inject {selectedSuggestions.size} Nodes
-                 </button>
-              </div>
-           </div>
-        </div>
-      )}
     </div>
   );
 };
