@@ -3,12 +3,33 @@ import React, { useState, useEffect } from 'react';
 import { Question, QuizState } from '../types';
 import { questions as staticQuestions } from '../data/questionData';
 import { mindMapData } from '../data/mindMapData';
-import { Play, Clock, CheckCircle, XCircle, Award, Target, Settings2, ArrowRight, RotateCcw, Check, Loader2, Sparkles, ChevronDown, ListChecks, BrainCircuit } from 'lucide-react';
+import { Play, Clock, CheckCircle, XCircle, Award, Target, Settings2, ArrowRight, RotateCcw, Check, Loader2, Sparkles, ChevronDown, ListChecks, BrainCircuit, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
+
+const getCombinedQuestions = (): Question[] => {
+  const stored = localStorage.getItem('cissp_generated_questions');
+  let generated: Question[] = [];
+  if (stored) {
+    try {
+      generated = JSON.parse(stored);
+    } catch (e) {
+      console.error("Failed to parse generated questions:", e);
+    }
+  }
+  return [...staticQuestions, ...generated];
+};
 
 const QuizDashboard: React.FC = () => {
   const [targetDomain, setTargetDomain] = useState<string>('All');
   const [isGenerating, setIsGenerating] = useState(false);
+  const isAdminMode = sessionStorage.getItem('cissp_vault_admin') === 'true';
+  const [selectedEngine, setSelectedEngine] = useState<string>(() => {
+    if (sessionStorage.getItem('cissp_vault_admin') !== 'true') {
+      return 'local-offline';
+    }
+    return localStorage.getItem('cissp_active_engine') || 'gemini-3.5-flash';
+  });
+  const [usedOfflineFallback, setUsedOfflineFallback] = useState<boolean>(false);
   const [state, setState] = useState<QuizState>({
     isActive: false,
     currentDomain: 'All',
@@ -36,6 +57,36 @@ const QuizDashboard: React.FC = () => {
 
   const generateAIQuestions = async () => {
     setIsGenerating(true);
+    setUsedOfflineFallback(false);
+
+    if (selectedEngine === 'local-offline') {
+      // Offline local engine setup
+      setTimeout(() => {
+        const targetDomains = targetDomain === 'All' ? domains : [targetDomain];
+        let filtered = (getCombinedQuestions() as any[]).filter(q => 
+          targetDomain === 'All' || q.domain === targetDomain || targetDomains.some(td => q.domain.includes(td) || td.includes(q.domain))
+        );
+        if (filtered.length < 10) {
+          const remaining = (getCombinedQuestions() as any[]).filter(q => !filtered.some(fq => fq.id === q.id));
+          filtered = [...filtered, ...remaining];
+        }
+        const shuffled = [...filtered].sort(() => 0.5 - Math.random()).slice(0, 10);
+        
+        setState(prev => ({
+          ...prev,
+          isActive: true,
+          questions: shuffled,
+          currentIndex: 0,
+          userAnswers: {},
+          score: 0,
+          isReview: false,
+          timeRemaining: 1800
+        }));
+        setIsGenerating(false);
+      }, 500);
+      return;
+    }
+
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
@@ -66,7 +117,7 @@ const QuizDashboard: React.FC = () => {
       `;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
+        model: selectedEngine,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -113,11 +164,29 @@ const QuizDashboard: React.FC = () => {
         timeRemaining: 1800
       }));
     } catch (error) {
-      console.error("AI Generation failed", error);
-      // Fallback logic
-      const filtered = (staticQuestions as any[]).filter(q => (targetDomain === 'All' || q.domain === targetDomain));
+      console.warn("Quiz AI Generation failed, smoothly transitioning to Offline Curated Reserve Bank:", error);
+      setUsedOfflineFallback(true);
+      
+      const targetDomains = targetDomain === 'All' ? domains : [targetDomain];
+      let filtered = (getCombinedQuestions() as any[]).filter(q => 
+        targetDomain === 'All' || q.domain === targetDomain || targetDomains.some(td => q.domain.includes(td) || td.includes(q.domain))
+      );
+      if (filtered.length < 10) {
+        const remaining = (getCombinedQuestions() as any[]).filter(q => !filtered.some(fq => fq.id === q.id));
+        filtered = [...filtered, ...remaining];
+      }
       const shuffled = [...filtered].sort(() => 0.5 - Math.random()).slice(0, 10);
-      setState(prev => ({ ...prev, isActive: true, questions: shuffled, currentIndex: 0, userAnswers: {}, score: 0, isReview: false, timeRemaining: 1800 }));
+      
+      setState(prev => ({ 
+        ...prev, 
+        isActive: true, 
+        questions: shuffled, 
+        currentIndex: 0, 
+        userAnswers: {}, 
+        score: 0, 
+        isReview: false, 
+        timeRemaining: 1800 
+      }));
     } finally {
       setIsGenerating(false);
     }
@@ -240,6 +309,47 @@ const QuizDashboard: React.FC = () => {
               </div>
             </div>
 
+            {/* AI Engine Picker */}
+            {isAdminMode && (
+              <div className="p-4 sm:p-5 bg-slate-50 rounded-[1.2rem] sm:rounded-[1.5rem] border border-slate-100 space-y-3 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-widest">
+                    <BrainCircuit className="w-3.5 h-3.5 text-indigo-500" /> Active AI Agent / Engine
+                  </label>
+                  {selectedEngine === 'local-offline' ? (
+                    <span className="text-[8px] font-black bg-emerald-50 text-emerald-600 border border-emerald-100 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                      Zero API Load
+                    </span>
+                  ) : (
+                    <span className="text-[8px] font-black bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded uppercase tracking-widest animate-pulse">
+                      Live API Active
+                    </span>
+                  )}
+                </div>
+                
+                <div className="relative">
+                  <select 
+                    value={selectedEngine}
+                    onChange={(e) => {
+                      setSelectedEngine(e.target.value);
+                      localStorage.setItem('cissp_active_engine', e.target.value);
+                    }}
+                    className="w-full appearance-none bg-white border border-slate-200 hover:border-indigo-100 rounded-xl p-3 text-slate-800 text-xs font-bold focus:ring-4 focus:ring-indigo-50 outline-none cursor-pointer transition-all pr-12"
+                  >
+                    <option value="gemini-3.5-flash">Gemini 3.5 Flash (Standard AI - Excellent Reasoning)</option>
+                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Fast AI - Recommended when traffic is high)</option>
+                    <option value="local-offline">Local Offline Engine (100% Free - Bypasses AI API load entirely)</option>
+                  </select>
+                  <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                </div>
+                <p className="text-[10px] text-slate-400 font-medium leading-relaxed uppercase tracking-tighter">
+                  {selectedEngine === 'gemini-3.5-flash' && "• Uses standard high-demand model. If experiencing temporary 503 spikes, switch to Flash Lite or Local."}
+                  {selectedEngine === 'gemini-3.1-flash-lite' && "• Uses high-speed lightweight model. Great for bypassing heavy traffic on standard models."}
+                  {selectedEngine === 'local-offline' && "• No API load. Runs locally using curated offline bank questions."}
+                </p>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
               <div>
                 <label className="flex items-center gap-2 text-[10px] sm:text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
@@ -339,10 +449,28 @@ const QuizDashboard: React.FC = () => {
 
       <div className="bg-white rounded-[1.5rem] sm:rounded-[2.5rem] shadow-2xl flex-1 flex flex-col overflow-hidden border border-slate-50">
         <div className="p-5 sm:p-12 flex-1 overflow-y-auto">
+          {usedOfflineFallback && (
+            <div className="mb-6 p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-2.5 animate-in slide-in-from-top-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider">Gemini API Load Spike Detected</p>
+                <p className="text-[10px] text-amber-700 font-bold leading-relaxed uppercase tracking-tighter mt-0.5">
+                  The simulator has seamlessly engaged the Offline Curated Question Bank. Your practice session remains fully active!
+                </p>
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap mb-5 sm:mb-8">
             <span className="px-2 py-0.5 sm:px-3 sm:py-1 bg-indigo-50 text-indigo-700 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest">{currentQ.domain}</span>
             <span className="px-2 py-0.5 sm:px-3 sm:py-1 bg-slate-50 text-slate-500 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest">{currentQ.difficulty}</span>
             <span className="px-2 py-0.5 sm:px-3 sm:py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest">{state.questionStyle}</span>
+            <span className={`px-2 py-0.5 sm:px-3 sm:py-1 rounded-lg text-[9px] sm:text-[10px] font-black uppercase tracking-widest border ${
+              usedOfflineFallback || selectedEngine === 'local-offline'
+                ? 'bg-emerald-50 text-emerald-600 border-emerald-100 font-extrabold'
+                : 'bg-indigo-50 text-indigo-600 border-indigo-100'
+            }`}>
+              Engine: {usedOfflineFallback ? 'Offline Reserve' : selectedEngine === 'local-offline' ? 'Local' : selectedEngine === 'gemini-3.1-flash-lite' ? 'Flash Lite' : 'Gemini 3.5'}
+            </span>
           </div>
           
           <h3 className="text-lg sm:text-2xl md:text-3xl font-bold text-slate-800 leading-[1.3] mb-6 sm:mb-12">

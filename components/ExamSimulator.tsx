@@ -3,6 +3,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Question } from '../types';
 import { Shield, Clock, BrainCircuit, Loader2, Sparkles, AlertCircle, Trophy, History, RefreshCcw, Activity, GraduationCap, BarChart3, Settings2, Sliders, Download, FileText, CheckCircle2, XCircle, ArrowRight, Gauge, Check, Info } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
+import { questions as staticQuestions } from '../data/questionData';
 
 // Official CISSP Weights (2024 Standard)
 const DOMAIN_WEIGHTS: { [key: string]: number } = {
@@ -18,6 +19,69 @@ const DOMAIN_WEIGHTS: { [key: string]: number } = {
 
 const PASSING_SCORE = 700; 
 const SECONDS_PER_QUESTION = 72;
+
+const getCombinedQuestions = (): Question[] => {
+  const stored = localStorage.getItem('cissp_generated_questions');
+  let generated: Question[] = [];
+  if (stored) {
+    try {
+      generated = JSON.parse(stored);
+    } catch (e) {
+      console.error("Failed to parse generated questions:", e);
+    }
+  }
+  return [...staticQuestions, ...generated];
+};
+
+const getOfflineQuestion = (domain: string, difficulty: string, history: any[]): Question => {
+  const usedIds = new Set(history.map(h => h.question.id));
+  const cleanDomain = domain.toLowerCase();
+  
+  const combined = getCombinedQuestions();
+  let candidates = combined.filter(q => {
+    if (usedIds.has(q.id)) return false;
+    const qDomain = q.domain.toLowerCase();
+    const qSubdomain = q.subdomain?.toLowerCase() || '';
+    return cleanDomain.includes(qDomain) || qDomain.includes(cleanDomain) || cleanDomain.includes(qSubdomain);
+  });
+
+  if (candidates.length === 0) {
+    candidates = combined.filter(q => !usedIds.has(q.id));
+  }
+
+  if (candidates.length === 0) {
+    candidates = [...combined];
+  }
+
+  let bestMatches = candidates.filter(q => q.difficulty?.toLowerCase() === difficulty.toLowerCase());
+  if (bestMatches.length === 0) {
+    bestMatches = candidates;
+  }
+
+  const baseQuestion = bestMatches[Math.floor(Math.random() * bestMatches.length)];
+  if (baseQuestion) {
+    return {
+      ...baseQuestion,
+      id: `${baseQuestion.id}-offline-${history.length}`
+    };
+  }
+
+  return {
+    id: `fallback-q-${history.length}`,
+    domain: domain,
+    subdomain: "Security Management",
+    difficulty: difficulty,
+    stem: `As a CISSP professional addressing ${domain}, what is the critical first action when conducting risk assessment or aligning security under pressure?`,
+    options: {
+      A: "Immediately isolate affected systems and report the breach to regulatory authorities.",
+      B: "Conduct a quantitative risk impact assessment to determine potential exposure first.",
+      C: "Align the security controls with business objectives, ensuring senior management buy-in.",
+      D: "Implement a defense-in-depth architecture regardless of cost to prevent any future occurrences."
+    },
+    correctOption: "C",
+    explanation: "Business alignment and senior management approval/buy-in is always the foundational requirement for any security posture or decision in the CISSP curriculum."
+  };
+};
 
 type ExamStatus = 'IDLE' | 'SETTINGS' | 'LOADING' | 'TESTING' | 'FINISHED';
 
@@ -45,6 +109,14 @@ const ExamSimulator: React.FC = () => {
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isAdminMode = sessionStorage.getItem('cissp_vault_admin') === 'true';
+  const [selectedEngine, setSelectedEngine] = useState<string>(() => {
+    if (sessionStorage.getItem('cissp_vault_admin') !== 'true') {
+      return 'local-offline';
+    }
+    return localStorage.getItem('cissp_active_engine') || 'gemini-3.5-flash';
+  });
+  const [usedOfflineFallback, setUsedOfflineFallback] = useState<boolean>(false);
 
   // REAL EXAM MODE Logic: If 150 items is selected, hide performance metrics
   const isRealExamMode = state.maxItems === 150;
@@ -139,8 +211,20 @@ const ExamSimulator: React.FC = () => {
 
   const generateNextQuestion = useCallback(async (difficulty: string, history: any[], min: number, max: number) => {
     setState(prev => ({ ...prev, status: 'LOADING' }));
+    const targetDomain = getNextTargetDomain(history);
+
+    if (selectedEngine === 'local-offline') {
+      // Simulate real engine calculation lag and load locally
+      setTimeout(() => {
+        const q = getOfflineQuestion(targetDomain, difficulty, history);
+        setCurrentQuestion(q);
+        setUsedOfflineFallback(false);
+        setState(prev => ({ ...prev, status: 'TESTING' }));
+      }, 600);
+      return;
+    }
+
     try {
-      const targetDomain = getNextTargetDomain(history);
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
       const prompt = `
@@ -159,7 +243,7 @@ const ExamSimulator: React.FC = () => {
       `;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
+        model: selectedEngine,
         contents: prompt,
         config: {
           responseMimeType: "application/json",
@@ -191,15 +275,21 @@ const ExamSimulator: React.FC = () => {
 
       const q = JSON.parse(response.text || "{}") as Question;
       setCurrentQuestion(q);
+      setUsedOfflineFallback(false);
       setState(prev => ({ ...prev, status: 'TESTING' }));
     } catch (error) {
-      console.error("CAT Engine Fault:", error);
-      setState(prev => ({ ...prev, status: 'IDLE' }));
+      console.warn("CAT Engine API error, triggering automated Offline Reserve Fallback:", error);
+      // Smoothly activate Offline Reserve Fallback to save progress and avoid 503 disruption
+      const fallbackQ = getOfflineQuestion(targetDomain, difficulty, history);
+      setCurrentQuestion(fallbackQ);
+      setUsedOfflineFallback(true);
+      setState(prev => ({ ...prev, status: 'TESTING' }));
     }
-  }, []);
+  }, [selectedEngine]);
 
   const startExam = () => {
     const sessionTime = state.maxItems * SECONDS_PER_QUESTION;
+    setUsedOfflineFallback(false);
     setState(prev => ({ ...prev, timeRemaining: sessionTime }));
     generateNextQuestion(state.currentDifficulty, [], state.minItems, state.maxItems);
   };
@@ -335,6 +425,47 @@ const ExamSimulator: React.FC = () => {
                 </p>
               </div>
             )}
+
+            {/* AI Agent Engine Selector */}
+            {isAdminMode && (
+              <div className="space-y-2.5 pt-4 border-t border-slate-200/60 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block flex items-center gap-1.5">
+                    <BrainCircuit className="w-3.5 h-3.5 text-indigo-500" />
+                    Active AI Agent / Engine
+                  </label>
+                  {selectedEngine === 'local-offline' ? (
+                    <span className="text-[8px] font-black bg-emerald-50 text-emerald-600 border border-emerald-100 px-1.5 py-0.5 rounded uppercase tracking-widest">
+                      Zero API Load
+                    </span>
+                  ) : (
+                    <span className="text-[8px] font-black bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded uppercase tracking-widest animate-pulse">
+                      Live API Active
+                    </span>
+                  )}
+                </div>
+                
+                <div className="relative">
+                  <select 
+                    value={selectedEngine}
+                    onChange={(e) => {
+                      setSelectedEngine(e.target.value);
+                      localStorage.setItem('cissp_active_engine', e.target.value);
+                    }}
+                    className="w-full bg-white border border-slate-200 hover:border-indigo-300 rounded-xl p-3 text-slate-800 text-xs font-bold focus:ring-2 focus:ring-indigo-100 outline-none cursor-pointer transition-all pr-10"
+                  >
+                    <option value="gemini-3.5-flash">Gemini 3.5 Flash (Standard AI - Excellent Reasoning)</option>
+                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite (Fast AI - Recommended when traffic is high)</option>
+                    <option value="local-offline">Local Offline Engine (100% Free - Bypasses AI API load entirely)</option>
+                  </select>
+                </div>
+                <p className="text-[10px] text-slate-400 font-medium leading-relaxed uppercase tracking-tighter">
+                  {selectedEngine === 'gemini-3.5-flash' && "• Uses standard high-demand model. If experiencing temporary 503 spikes, switch to Flash Lite or Local."}
+                  {selectedEngine === 'gemini-3.1-flash-lite' && "• Uses high-speed lightweight model. Great for bypassing heavy traffic on standard models."}
+                  {selectedEngine === 'local-offline' && "• No API load. Runs locally using curated offline bank questions and custom calibration."}
+                </p>
+              </div>
+            )}
           </div>
 
           <button onClick={startExam} className="w-full py-3.5 sm:py-4 bg-slate-900 text-white rounded-xl sm:rounded-2xl font-black text-base sm:text-lg hover:bg-indigo-600 transition-all flex items-center justify-center gap-3 active:scale-95 shadow-xl group">
@@ -419,6 +550,19 @@ const ExamSimulator: React.FC = () => {
                   </div>
                 </div>
               )}
+
+              <div className="flex flex-col">
+                <span className="text-[6px] font-black text-slate-400 uppercase tracking-widest mb-0.5">Engine</span>
+                <div className="flex items-center gap-1.5">
+                  <div className={`px-1.5 py-0.5 rounded-[4px] text-[8px] font-black uppercase tracking-widest border ${
+                    usedOfflineFallback || selectedEngine === 'local-offline'
+                      ? 'bg-emerald-50 text-emerald-600 border-emerald-100 font-extrabold'
+                      : 'bg-indigo-50 text-indigo-600 border-indigo-100 animate-pulse'
+                  }`}>
+                    {usedOfflineFallback ? 'Offline Reserve' : selectedEngine === 'local-offline' ? 'Local Engine' : selectedEngine === 'gemini-3.1-flash-lite' ? 'Flash Lite' : 'Gemini 3.5'}
+                  </div>
+                </div>
+              </div>
            </div>
 
            <div className="px-3 py-1 bg-slate-50 rounded-xl border border-slate-100 flex items-center gap-2 w-fit ml-auto sm:ml-0">
@@ -441,7 +585,18 @@ const ExamSimulator: React.FC = () => {
           <div className="h-full flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto p-5 sm:p-12 custom-scrollbar">
                <div className="max-w-4xl mx-auto w-full space-y-6 sm:space-y-10">
-                 <div className="flex items-center gap-2 flex-wrap">
+                 {usedOfflineFallback && (
+                    <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-2.5 animate-in slide-in-from-top-2">
+                       <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                       <div>
+                          <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider">Gemini API Load Spike Detected</p>
+                          <p className="text-[10px] text-amber-700 font-bold leading-relaxed uppercase tracking-tighter mt-0.5">
+                             The simulator has seamlessly engaged the Offline Reserve Question Bank. Your CAT calibration and exam scoring remain active!
+                          </p>
+                       </div>
+                    </div>
+                 )}
+                 <div className="flex items-center gap-2 flex-wrap animate-in fade-in">
                     <div className="px-2.5 py-0.5 sm:px-3 sm:py-1 bg-indigo-50 border border-indigo-100 rounded text-[9px] sm:text-[10px] font-black text-indigo-600 uppercase tracking-widest">{currentQuestion.domain}</div>
                     {!isRealExamMode && <div className="px-2.5 py-0.5 sm:px-3 sm:py-1 bg-slate-50 border border-slate-200 rounded text-[9px] sm:text-[10px] font-black text-slate-400 uppercase tracking-widest">{currentQuestion.difficulty} Target</div>}
                  </div>
