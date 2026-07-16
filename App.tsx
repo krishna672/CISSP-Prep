@@ -2,7 +2,7 @@
 import { mindMapData as initialData } from './data/mindMapData';
 import { AppTab, MindMapNode } from './types';
 import React, { useState } from 'react';
-import { Map, BookOpen, Layers, Download, CheckCircle, Shield, Key, FileText, X, Gavel, GraduationCap, Maximize2, ChevronLeft, Sparkles } from 'lucide-react';
+import { Map, BookOpen, Layers, Download, CheckCircle, Shield, Key, FileText, X, ChevronLeft, GraduationCap } from 'lucide-react';
 import MindMap from './components/MindMap';
 import QuizDashboard from './components/QuizDashboard';
 import ExamSimulator from './components/ExamSimulator';
@@ -14,7 +14,7 @@ function App() {
   const [selectedNode, setSelectedNode] = useState<MindMapNode | null>(null);
   const [isConceptModalOpen, setIsConceptModalOpen] = useState(false);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
-  const [mapData, setMapData] = useState<MindMapNode>(initialData);
+  const [mapData] = useState<MindMapNode>(initialData);
 
   const handleExport = () => {
     alert("Map data exported successfully (JSON format).");
@@ -24,26 +24,6 @@ function App() {
     if (selectedNode) {
       setIsDetailsModalOpen(true);
     }
-  };
-
-  const handleAddNodes = (parentId: string, newNodes: MindMapNode[]) => {
-    const updateNodes = (node: MindMapNode): MindMapNode => {
-      if (node.id === parentId) {
-        return {
-          ...node,
-          children: [...(node.children || []), ...newNodes]
-        };
-      }
-      if (node.children) {
-        return {
-          ...node,
-          children: node.children.map(updateNodes)
-        };
-      }
-      return node;
-    };
-
-    setMapData(prev => updateNodes(prev));
   };
 
   return (
@@ -113,7 +93,6 @@ function App() {
                             setIsConceptModalOpen(false);
                         }
                     }}
-                    onAddNodes={handleAddNodes}
                 />
             )}
             {activeTab === AppTab.QUIZ && <QuizDashboard />}
