@@ -1,9 +1,8 @@
 {
   "name": "CISSP Mind Map & Quiz Master",
   "description": "Interactive CISSP study tool featuring high-fidelity D3.js mind maps reconstructed from ThorTeaches PDFs and a dual-mode quiz engine with direct and scenario-based assessments.",
-  "requestFramePermissions": [
-    "camera",
-    "microphone"
-  ],
-  "majorCapabilities": []
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

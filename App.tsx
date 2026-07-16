@@ -133,7 +133,7 @@ function App() {
                             onClick={() => setIsConceptModalOpen(true)}
                             className="flex-1 sm:flex-none bg-indigo-600 hover:bg-indigo-700 text-white font-black text-[10px] uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all shadow-md flex items-center justify-center gap-1.5"
                         >
-                            <Sparkles className="w-3 h-3" /> View Details
+                            <BookOpen className="w-3 h-3" /> View Details
                         </button>
                         <button 
                             onClick={() => setSelectedNode(null)}
@@ -209,7 +209,7 @@ function App() {
                               onClick={handleOpenDetails}
                               className="flex-1 py-4 bg-slate-900 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-600 transition-all shadow-lg flex items-center justify-center gap-3 group"
                             >
-                              Launch In-Depth Analysis <Sparkles className="w-4 h-4 group-hover:animate-pulse" />
+                              Study Comprehensive Card <BookOpen className="w-4 h-4 group-hover:scale-105 transition-transform" />
                             </button>
                             <button 
                               onClick={() => setIsConceptModalOpen(false)}
