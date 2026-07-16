@@ -3,7 +3,7 @@ import {
   Key, Shield, Users, Trash2, PlusCircle, Copy, Check, 
   Settings, Lock, KeyRound, AlertTriangle, RefreshCw, Eye, EyeOff,
   Brain, Sparkles, Save, BookOpen, Award, AlertCircle, HelpCircle, Dices, ChevronDown, CheckCircle2, ListChecks,
-  Trophy, Upload, Download, Search, Calendar, FileText
+  Trophy, Upload, Download, Search, Calendar, FileText, Link
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { Question } from '../types';
@@ -56,6 +56,7 @@ const AdminPanel: React.FC = () => {
   const [newCodeInput, setNewCodeInput] = useState('');
   const [candidateNameInput, setCandidateNameInput] = useState('');
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [copiedLink, setCopiedLink] = useState<string | null>(null);
   const [createError, setCreateError] = useState('');
   const [codePendingDelete, setCodePendingDelete] = useState<string | null>(null);
   const [leaderboardPendingDelete, setLeaderboardPendingDelete] = useState<string | null>(null);
@@ -435,6 +436,14 @@ const AdminPanel: React.FC = () => {
     navigator.clipboard.writeText(code);
     setCopiedCode(code);
     setTimeout(() => setCopiedCode(null), 2000);
+  };
+
+  // Copy shareable link helper
+  const handleCopyShareLink = (code: string) => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}?invite=${encodeURIComponent(code)}`;
+    navigator.clipboard.writeText(shareUrl);
+    setCopiedLink(code);
+    setTimeout(() => setCopiedLink(null), 2000);
   };
 
   // Rotate Admin Passcode
@@ -969,6 +978,18 @@ const AdminPanel: React.FC = () => {
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={() => handleCopyShareLink(item.code)}
+                            className={`p-2 rounded-lg border transition-all ${
+                              copiedLink === item.code 
+                                ? 'bg-indigo-50 border-indigo-200 text-indigo-600' 
+                                : 'bg-slate-50 border-slate-200 text-indigo-500 hover:bg-slate-100'
+                            }`}
+                            title="Copy Shareable Invite Link"
+                          >
+                            {copiedLink === item.code ? <Check className="w-3.5 h-3.5" /> : <Link className="w-3.5 h-3.5" />}
+                          </button>
+
                           <button
                             onClick={() => handleCopyCode(item.code)}
                             className={`p-2 rounded-lg border transition-all ${

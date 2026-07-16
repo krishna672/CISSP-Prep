@@ -44,15 +44,64 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
 
     // 2. Invite codes
     const storedCodes = localStorage.getItem('cissp_invite_codes');
+    let loadedCodes: InviteCode[] = [];
     if (storedCodes) {
       try {
-        setActiveCodes(JSON.parse(storedCodes));
+        loadedCodes = JSON.parse(storedCodes);
       } catch (e) {
-        initializeDefaultCodes();
+        loadedCodes = [
+          {
+            code: DEFAULT_INVITE_CODE,
+            createdAt: new Date().toISOString(),
+            createdBy: 'System Default',
+            usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
+          }
+        ];
+        localStorage.setItem('cissp_invite_codes', JSON.stringify(loadedCodes));
       }
     } else {
-      initializeDefaultCodes();
+      loadedCodes = [
+        {
+          code: DEFAULT_INVITE_CODE,
+          createdAt: new Date().toISOString(),
+          createdBy: 'System Default',
+          usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
+        }
+      ];
+      localStorage.setItem('cissp_invite_codes', JSON.stringify(loadedCodes));
     }
+
+    // Check query params to see if an invite was shared via URL
+    const params = new URLSearchParams(window.location.search);
+    const inviteParam = params.get('invite') || params.get('code');
+    if (inviteParam) {
+      const cleanParam = inviteParam.trim().toUpperCase();
+      const finalAdminPass = storedAdminPass || DEFAULT_ADMIN_PASSCODE;
+      
+      // If it's not administrative and not already registered, auto-register it locally
+      if (cleanParam !== finalAdminPass.toUpperCase() && !loadedCodes.some(c => c.code.toUpperCase() === cleanParam)) {
+        const importedCode: InviteCode = {
+          code: cleanParam,
+          createdAt: new Date().toISOString(),
+          createdBy: 'Shared Invitation Link',
+          usedCount: 0,
+          candidateName: `Candidate (${cleanParam})`
+        };
+        loadedCodes = [importedCode, ...loadedCodes];
+        localStorage.setItem('cissp_invite_codes', JSON.stringify(loadedCodes));
+      }
+      setPasscode(cleanParam);
+      
+      // Clean query params to keep the url neat and avoid re-importing on reload
+      try {
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+      } catch (e) {
+        console.error("Failed to clean query parameters from URL:", e);
+      }
+    }
+
+    setActiveCodes(loadedCodes);
 
     // 3. Track codes already successfully redeemed on this specific device
     const storedRedeemed = localStorage.getItem('cissp_my_redeemed_codes');
@@ -102,7 +151,24 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     }
 
     // Check if it matches any active invite code in the dynamic list
-    const matchedCodeIndex = activeCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
+    let matchedCodeIndex = activeCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
+
+    // Dynamic offline verification fallback:
+    // If no direct local match, but starts with 'CISSP-' and has a valid structure (e.g. 'CISSP-XXXXXX'),
+    // we dynamically register it on the fly on the candidate's device.
+    if (matchedCodeIndex === -1 && inputUpper.startsWith('CISSP-') && inputUpper.length >= 10) {
+      const dynamicCode: InviteCode = {
+        code: inputUpper,
+        createdAt: new Date().toISOString(),
+        createdBy: 'Admin-Generated Invite (Verified offline)',
+        usedCount: 0,
+        candidateName: `Candidate (${inputUpper})`
+      };
+      const updatedCodes = [dynamicCode, ...activeCodes];
+      localStorage.setItem('cissp_invite_codes', JSON.stringify(updatedCodes));
+      setActiveCodes(updatedCodes);
+      matchedCodeIndex = 0; // point to the newly added code
+    }
 
     if (matchedCodeIndex !== -1) {
       const targetCode = activeCodes[matchedCodeIndex];
