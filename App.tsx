@@ -2,15 +2,27 @@
 import { mindMapData as initialData } from './data/mindMapData';
 import { AppTab, MindMapNode } from './types';
 import React, { useState } from 'react';
-import { Map, BookOpen, Layers, Download, CheckCircle, Shield, Key, FileText, X, ChevronLeft, GraduationCap } from 'lucide-react';
+import { Map, BookOpen, Layers, Download, CheckCircle, Shield, Key, FileText, X, ChevronLeft, GraduationCap, Lock, ShieldAlert, Trophy } from 'lucide-react';
 import MindMap from './components/MindMap';
 import QuizDashboard from './components/QuizDashboard';
 import ExamSimulator from './components/ExamSimulator';
 import DesignTokens from './components/DesignTokens';
 import ExpandedDetailsModal from './components/ExpandedDetailsModal';
+import SecurityGate from './components/SecurityGate';
+import AdminPanel from './components/AdminPanel';
+import Leaderboard from './components/Leaderboard';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>(AppTab.MINDMAP);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return sessionStorage.getItem('cissp_vault_auth') === 'true';
+  });
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
+    return sessionStorage.getItem('cissp_vault_admin') === 'true';
+  });
+  const [activeTab, setActiveTab] = useState<AppTab>(() => {
+    const isSessionAdmin = sessionStorage.getItem('cissp_vault_admin') === 'true';
+    return isSessionAdmin ? AppTab.ADMIN : AppTab.MINDMAP;
+  });
   const [selectedNode, setSelectedNode] = useState<MindMapNode | null>(null);
   const [isConceptModalOpen, setIsConceptModalOpen] = useState(false);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
@@ -26,6 +38,42 @@ function App() {
     }
   };
 
+  const handleUnlock = (adminUnlocked: boolean) => {
+    sessionStorage.setItem('cissp_vault_auth', 'true');
+    sessionStorage.setItem('cissp_vault_admin', adminUnlocked ? 'true' : 'false');
+    setIsAuthenticated(true);
+    setIsAdmin(adminUnlocked);
+    if (adminUnlocked) {
+      setActiveTab(AppTab.ADMIN);
+    } else {
+      setActiveTab(AppTab.MINDMAP);
+    }
+  };
+
+  const handleLock = () => {
+    sessionStorage.removeItem('cissp_vault_auth');
+    sessionStorage.removeItem('cissp_vault_admin');
+    setIsAuthenticated(false);
+    setIsAdmin(false);
+  };
+
+  if (!isAuthenticated) {
+    return <SecurityGate onUnlock={handleUnlock} />;
+  }
+
+  // Dynamic list of navigation tabs
+  const navigationTabs = [
+    { id: AppTab.MINDMAP, label: 'Mind Map', icon: Map },
+    { id: AppTab.QUIZ, label: 'Practice', icon: BookOpen },
+    { id: AppTab.EXAM, label: 'Adaptive CAT', icon: GraduationCap },
+    { id: AppTab.LEADERBOARD, label: 'Leaderboard', icon: Trophy },
+    { id: AppTab.DESIGN, label: 'Tokens', icon: Layers }
+  ];
+
+  if (isAdmin) {
+    navigationTabs.push({ id: AppTab.ADMIN, label: 'Admin SOC', icon: ShieldAlert });
+  }
+
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-50 text-slate-900 overflow-hidden">
       {/* Header Navigation */}
@@ -37,12 +85,7 @@ function App() {
           </div>
           <div className="h-4 w-px bg-slate-200 hidden sm:block"></div>
           <nav className="flex items-center gap-1">
-            {[
-              { id: AppTab.MINDMAP, label: 'Mind Map', icon: Map },
-              { id: AppTab.QUIZ, label: 'Practice', icon: BookOpen },
-              { id: AppTab.EXAM, label: 'Adaptive CAT', icon: GraduationCap },
-              { id: AppTab.DESIGN, label: 'Tokens', icon: Layers }
-            ].map(tab => (
+            {navigationTabs.map(tab => (
               <button 
                 key={tab.id}
                 onClick={() => {
@@ -54,8 +97,12 @@ function App() {
                 }}
                 className={`flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 rounded-full text-[11px] font-black transition-all shrink-0 ${
                     activeTab === tab.id 
-                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' 
-                    : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+                    ? tab.id === AppTab.ADMIN 
+                      ? 'bg-rose-600 text-white shadow-lg shadow-rose-100'
+                      : 'bg-indigo-600 text-white shadow-lg shadow-indigo-100' 
+                    : tab.id === AppTab.ADMIN
+                      ? 'text-rose-600 hover:text-rose-800 hover:bg-rose-50'
+                      : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
                 }`}
                 title={tab.label}
               >
@@ -67,12 +114,21 @@ function App() {
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+             {isAdmin && (
+               <div className="text-[10px] font-black text-rose-600 bg-rose-50 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 border border-rose-100 uppercase tracking-wider">
+                 <ShieldAlert className="w-3.5 h-3.5 animate-pulse" />
+                 <span>Admin Operator</span>
+               </div>
+             )}
              <div className="text-[10px] font-black text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg flex items-center gap-1 border border-emerald-100 uppercase tracking-widest">
                 <CheckCircle className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">Core Verified</span>
             </div>
-            <button onClick={handleExport} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors">
+            <button onClick={handleExport} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors" title="Export Map Data">
                 <Download className="w-4 h-4" />
+            </button>
+            <button onClick={handleLock} className="p-2 hover:bg-rose-50 hover:text-rose-600 rounded-xl text-slate-500 transition-colors" title="Lock Vault (Sign Out)">
+                <Lock className="w-4 h-4" />
             </button>
         </div>
       </header>
@@ -97,7 +153,9 @@ function App() {
             )}
             {activeTab === AppTab.QUIZ && <QuizDashboard />}
             {activeTab === AppTab.EXAM && <ExamSimulator />}
+            {activeTab === AppTab.LEADERBOARD && <Leaderboard />}
             {activeTab === AppTab.DESIGN && <DesignTokens />}
+            {activeTab === AppTab.ADMIN && <AdminPanel />}
 
             {/* Elegant Floating Selection Bar */}
             {activeTab === AppTab.MINDMAP && selectedNode && !isConceptModalOpen && (

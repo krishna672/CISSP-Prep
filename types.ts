@@ -54,5 +54,7 @@ export enum AppTab {
   MINDMAP = 'MINDMAP',
   QUIZ = 'QUIZ',
   EXAM = 'EXAM',
-  DESIGN = 'DESIGN'
+  DESIGN = 'DESIGN',
+  ADMIN = 'ADMIN',
+  LEADERBOARD = 'LEADERBOARD'
 }
