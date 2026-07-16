@@ -62,6 +62,63 @@ const ExamSimulator: React.FC = () => {
     return () => clearInterval(timer);
   }, [state.status, state.timeRemaining]);
 
+  // Leaderboard automatic submission
+  useEffect(() => {
+    if (state.status === 'FINISHED' && state.questionHistory.length > 0) {
+      const activeCode = sessionStorage.getItem('cissp_vault_code') || 'CISSP2026';
+      
+      let candidateName = '';
+      const storedCodes = localStorage.getItem('cissp_invite_codes');
+      if (storedCodes) {
+        try {
+          const codes = JSON.parse(storedCodes);
+          const matched = codes.find((c: any) => c.code.toUpperCase() === activeCode.toUpperCase());
+          if (matched && matched.candidateName) {
+            candidateName = matched.candidateName;
+          }
+        } catch (e) {}
+      }
+      
+      if (!candidateName) {
+        if (activeCode === 'ADMIN') {
+          candidateName = 'System Administrator';
+        } else if (activeCode === 'CISSP2026') {
+          candidateName = 'Default Student';
+        } else {
+          candidateName = `Candidate (${activeCode})`;
+        }
+      }
+
+      let leaderboard = [];
+      const storedLeaderboard = localStorage.getItem('cissp_leaderboard');
+      if (storedLeaderboard) {
+        try {
+          leaderboard = JSON.parse(storedLeaderboard);
+        } catch (e) {}
+      }
+
+      // Check if we already logged this specific finished session to avoid duplicates
+      const sessionKey = `cissp_exam_session_${state.questionHistory.length}_${state.abilityEstimate}`;
+      const isAlreadyLogged = sessionStorage.getItem(sessionKey) === 'true';
+      if (!isAlreadyLogged) {
+        sessionStorage.setItem(sessionKey, 'true');
+        const newEntry = {
+          id: `cat-${Date.now()}`,
+          code: activeCode,
+          name: candidateName,
+          score: Math.round(state.abilityEstimate),
+          type: 'CAT Exam',
+          questionsCount: state.questionHistory.length,
+          timestamp: new Date().toISOString(),
+          passed: state.abilityEstimate >= PASSING_SCORE
+        };
+
+        leaderboard.unshift(newEntry);
+        localStorage.setItem('cissp_leaderboard', JSON.stringify(leaderboard));
+      }
+    }
+  }, [state.status, state.abilityEstimate, state.questionHistory]);
+
   const getNextTargetDomain = (history: any[]) => {
     const domainCounts: { [key: string]: number } = {};
     Object.keys(DOMAIN_WEIGHTS).forEach(d => domainCounts[d] = 0);

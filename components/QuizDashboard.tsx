@@ -132,6 +132,55 @@ const QuizDashboard: React.FC = () => {
     let score = 0;
     state.questions.forEach(q => { if (state.userAnswers[q.id] === q.correctOption) score++; });
     setState(prev => ({ ...prev, isReview: true, score }));
+
+    // Record score on leaderboard
+    if (state.questions.length > 0) {
+      const activeCode = sessionStorage.getItem('cissp_vault_code') || 'CISSP2026';
+      let candidateName = '';
+      const storedCodes = localStorage.getItem('cissp_invite_codes');
+      if (storedCodes) {
+        try {
+          const codes = JSON.parse(storedCodes);
+          const matched = codes.find((c: any) => c.code.toUpperCase() === activeCode.toUpperCase());
+          if (matched && matched.candidateName) {
+            candidateName = matched.candidateName;
+          }
+        } catch (e) {}
+      }
+
+      if (!candidateName) {
+        if (activeCode === 'ADMIN') {
+          candidateName = 'System Administrator';
+        } else if (activeCode === 'CISSP2026') {
+          candidateName = 'Default Student';
+        } else {
+          candidateName = `Candidate (${activeCode})`;
+        }
+      }
+
+      let leaderboard = [];
+      const storedLeaderboard = localStorage.getItem('cissp_leaderboard');
+      if (storedLeaderboard) {
+        try {
+          leaderboard = JSON.parse(storedLeaderboard);
+        } catch (e) {}
+      }
+
+      const scorePercent = Math.round((score / state.questions.length) * 100);
+      const newEntry = {
+        id: `quiz-${Date.now()}`,
+        code: activeCode,
+        name: candidateName,
+        score: scorePercent,
+        type: 'Practice Quiz',
+        questionsCount: state.questions.length,
+        timestamp: new Date().toISOString(),
+        passed: scorePercent >= 70
+      };
+
+      leaderboard.unshift(newEntry);
+      localStorage.setItem('cissp_leaderboard', JSON.stringify(leaderboard));
+    }
   };
 
   const formatTime = (seconds: number) => {

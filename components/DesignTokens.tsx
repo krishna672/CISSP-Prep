@@ -3,7 +3,8 @@ import { MM_COLORS } from '../data/mindMapData';
 
 const DesignTokens: React.FC = () => {
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="absolute inset-0 overflow-y-auto">
+      <div className="p-8 max-w-4xl mx-auto">
         <h2 className="text-2xl font-bold mb-6 text-slate-800">Visual Design System</h2>
         <p className="mb-8 text-slate-600">Extracted from ThorTeaches PDF artifacts to ensure fidelity.</p>
 
@@ -45,6 +46,7 @@ const DesignTokens: React.FC = () => {
                 </div>
             </div>
         </div>
+      </div>
     </div>
   );
 };
