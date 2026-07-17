@@ -11,7 +11,7 @@ import {
   generateSignature, 
   decodeNameFromCode,
   saveInviteCodesCloud,
-  fetchAdminPasscodeCloud
+  verifyAdminPasscodeCloud
 } from './cloudSync';
 
 interface SecurityGateProps {
@@ -19,7 +19,6 @@ interface SecurityGateProps {
 }
 
 const DEFAULT_INVITE_CODE = 'CISSP2026';
-const DEFAULT_ADMIN_PASSCODE = 'ADMIN2026';
 
 const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
   const [passcode, setPasscode] = useState('');
@@ -30,25 +29,15 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
 
   // Local storage cache keys
   const [activeCodes, setActiveCodes] = useState<InviteCode[]>([]);
-  const [adminPasscode, setAdminPasscode] = useState(DEFAULT_ADMIN_PASSCODE);
   const [redeemedCodesOnDevice, setRedeemedCodesOnDevice] = useState<string[]>([]);
 
-  // Initialize and load list of active invite codes and master admin passcode
+  // Initialize and load list of active invite codes.
+  // Note: the admin passcode is intentionally never fetched or cached here.
+  // It's verified server-side (see handleSubmit) so it never touches the
+  // browser -- previously it was pulled down and stored in localStorage for
+  // every visitor before they even logged in, which exposed it in plain text.
   useEffect(() => {
-    // 1. Admin passcode
-    const storedAdminPass = localStorage.getItem('cissp_admin_passcode');
-    if (storedAdminPass) {
-      setAdminPasscode(storedAdminPass);
-    } else {
-      localStorage.setItem('cissp_admin_passcode', DEFAULT_ADMIN_PASSCODE);
-    }
-
-    // 2. Fetch and sync invite codes (Local + Cloud merge)
     const loadAndSyncCodes = async () => {
-      // Sync admin passcode with cloud
-      const syncedAdminPass = await fetchAdminPasscodeCloud(DEFAULT_ADMIN_PASSCODE);
-      setAdminPasscode(syncedAdminPass);
-
       let loadedCodes = await fetchInviteCodesCloud();
       
       if (loadedCodes.length === 0) {
@@ -68,8 +57,7 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       const inviteParam = params.get('invite') || params.get('code');
       if (inviteParam) {
         const cleanParam = inviteParam.trim().toUpperCase();
-        const finalAdminPass = storedAdminPass || DEFAULT_ADMIN_PASSCODE;
-        
+
         // Let's decode if it's a signed invite code
         const parts = cleanParam.split('-');
         let hasValidSig = false;
@@ -87,8 +75,13 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
           }
         }
 
+        // Guard against accidentally auto-registering the admin passcode
+        // itself as an invite code (checked server-side so the real
+        // passcode never needs to be known client-side).
+        const paramIsAdminPasscode = await verifyAdminPasscodeCloud(cleanParam);
+
         // If it's not administrative and not already registered, auto-register it
-        if (cleanParam !== finalAdminPass.toUpperCase() && !loadedCodes.some(c => c.code.toUpperCase() === cleanParam)) {
+        if (!paramIsAdminPasscode && !loadedCodes.some(c => c.code.toUpperCase() === cleanParam)) {
           // If it is a 4-part code but has an invalid signature, we don't auto-register it to maintain security
           if (parts.length < 4 || hasValidSig) {
             const importedCode: InviteCode = {
@@ -149,12 +142,12 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     const inputPass = passcode.trim();
     const inputUpper = inputPass.toUpperCase();
 
-    // Fetch the latest admin passcode from cloud to allow access from any machine
-    const freshAdminPass = await fetchAdminPasscodeCloud(DEFAULT_ADMIN_PASSCODE);
-    setAdminPasscode(freshAdminPass);
+    // Verify against the admin passcode server-side. The real passcode
+    // value is never sent to or stored in the browser -- only a yes/no
+    // answer comes back.
+    const isAdminPasscode = await verifyAdminPasscodeCloud(inputPass);
 
-    // Check if it's the admin passcode
-    if (inputPass === freshAdminPass) {
+    if (isAdminPasscode) {
       setSuccess(true);
       setSuccessMessage('Administrator Credentials Accepted. Unlocking Admin console...');
       

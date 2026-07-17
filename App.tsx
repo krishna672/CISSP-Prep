@@ -1,16 +1,16 @@
 
 import { mindMapData as initialData } from './data/mindMapData';
 import { AppTab, MindMapNode } from './types';
-import React, { useState } from 'react';
-import { Map, BookOpen, Layers, Download, CheckCircle, Shield, Key, FileText, X, ChevronLeft, GraduationCap, Lock, ShieldAlert, Trophy } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Map, BookOpen, Download, CheckCircle, Shield, Key, FileText, X, ChevronLeft, GraduationCap, Lock, ShieldAlert, Trophy } from 'lucide-react';
 import MindMap from './components/MindMap';
 import QuizDashboard from './components/QuizDashboard';
 import ExamSimulator from './components/ExamSimulator';
-import DesignTokens from './components/DesignTokens';
 import ExpandedDetailsModal from './components/ExpandedDetailsModal';
 import SecurityGate from './components/SecurityGate';
 import AdminPanel from './components/AdminPanel';
 import Leaderboard from './components/Leaderboard';
+import { fetchInviteCodesCloud } from './components/cloudSync';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -53,9 +53,42 @@ function App() {
   const handleLock = () => {
     sessionStorage.removeItem('cissp_vault_auth');
     sessionStorage.removeItem('cissp_vault_admin');
+    sessionStorage.removeItem('cissp_vault_code');
     setIsAuthenticated(false);
     setIsAdmin(false);
   };
+
+  // If a candidate's invite code gets revoked by an admin while they're
+  // still logged in, their session shouldn't keep working. Periodically
+  // (and whenever the tab regains focus) re-check that the code used to
+  // log in still exists in the registry; if it's gone, log them out.
+  useEffect(() => {
+    if (!isAuthenticated || isAdmin) return;
+
+    const activeCode = sessionStorage.getItem('cissp_vault_code');
+    if (!activeCode || activeCode === 'ADMIN') return;
+
+    const checkCodeStillValid = async () => {
+      try {
+        const codes = await fetchInviteCodesCloud();
+        const stillExists = codes.some(c => c.code.toUpperCase() === activeCode.toUpperCase());
+        if (!stillExists) {
+          handleLock();
+        }
+      } catch (e) {
+        // Network hiccup -- don't punish the candidate for a transient error.
+      }
+    };
+
+    checkCodeStillValid();
+    const intervalId = setInterval(checkCodeStillValid, 30000);
+    window.addEventListener('focus', checkCodeStillValid);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', checkCodeStillValid);
+    };
+  }, [isAuthenticated, isAdmin]);
 
   if (!isAuthenticated) {
     return <SecurityGate onUnlock={handleUnlock} />;
@@ -66,8 +99,7 @@ function App() {
     { id: AppTab.MINDMAP, label: 'Mind Map', icon: Map },
     { id: AppTab.QUIZ, label: 'Practice', icon: BookOpen },
     { id: AppTab.EXAM, label: 'Adaptive CAT', icon: GraduationCap },
-    { id: AppTab.LEADERBOARD, label: 'Leaderboard', icon: Trophy },
-    { id: AppTab.DESIGN, label: 'Tokens', icon: Layers }
+    { id: AppTab.LEADERBOARD, label: 'Leaderboard', icon: Trophy }
   ];
 
   if (isAdmin) {
@@ -154,7 +186,6 @@ function App() {
             {activeTab === AppTab.QUIZ && <QuizDashboard />}
             {activeTab === AppTab.EXAM && <ExamSimulator />}
             {activeTab === AppTab.LEADERBOARD && <Leaderboard />}
-            {activeTab === AppTab.DESIGN && <DesignTokens />}
             {activeTab === AppTab.ADMIN && <AdminPanel />}
 
             {/* Elegant Floating Selection Bar */}

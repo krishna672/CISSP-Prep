@@ -28,18 +28,16 @@ export function decodeNameFromCode(safeName: string): string {
 // ----------------------------------------------------
 // Cloud Sync: LEADERBOARD
 // ----------------------------------------------------
+//
+// The cloud store is the single source of truth. The local cache is only
+// ever used as a read-only fallback for when the network/cloud is briefly
+// unreachable -- it is never merged back into a successful cloud response.
+// (Merging used to resurrect entries an admin had already deleted, because
+// a device that still had the old entry cached locally would keep adding
+// it back in on every fetch.)
 
 export async function fetchLeaderboardCloud(): Promise<LeaderboardEntry[]> {
   const localKey = 'cissp_leaderboard';
-  const localData = localStorage.getItem(localKey);
-  let localEntries: LeaderboardEntry[] = [];
-  if (localData) {
-    try {
-      localEntries = JSON.parse(localData);
-    } catch (e) {
-      localEntries = [];
-    }
-  }
 
   try {
     const response = await fetch(`${BASE_URL}/leaderboard`, {
@@ -52,32 +50,31 @@ export async function fetchLeaderboardCloud(): Promise<LeaderboardEntry[]> {
       if (text && text.trim()) {
         const cloudEntries: LeaderboardEntry[] = JSON.parse(text);
         if (Array.isArray(cloudEntries)) {
-          // Merge local and cloud entries by unique ID
-          const mergedMap = new Map<string, LeaderboardEntry>();
-          // Add local entries first
-          localEntries.forEach(entry => {
-            if (entry && entry.id && !entry.id.startsWith('mock-')) {
-              mergedMap.set(entry.id, entry);
-            }
-          });
-          // Overwrite/add cloud entries (cloud takes priority for overlapping ids)
-          cloudEntries.forEach(entry => {
-            if (entry && entry.id && !entry.id.startsWith('mock-')) {
-              mergedMap.set(entry.id, entry);
-            }
-          });
-
-          const mergedEntries = Array.from(mergedMap.values());
-          localStorage.setItem(localKey, JSON.stringify(mergedEntries));
-          return mergedEntries;
+          const cleanEntries = cloudEntries.filter(e => e && e.id && !e.id.startsWith('mock-'));
+          localStorage.setItem(localKey, JSON.stringify(cleanEntries));
+          return cleanEntries;
         }
+      } else {
+        // Cloud explicitly returned an empty body -- treat as an empty board,
+        // not a reason to fall back to a possibly-stale local cache.
+        localStorage.setItem(localKey, JSON.stringify([]));
+        return [];
       }
     }
   } catch (error) {
     console.warn('Cloud Sync: Failed to fetch leaderboard. Falling back to offline state.', error);
   }
 
-  return localEntries;
+  // Only reached if the cloud request itself failed (offline, network error).
+  const localData = localStorage.getItem(localKey);
+  if (localData) {
+    try {
+      return JSON.parse(localData);
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
 }
 
 export async function saveLeaderboardCloud(entries: LeaderboardEntry[]): Promise<boolean> {
@@ -129,18 +126,13 @@ export async function clearLeaderboardCloud(): Promise<boolean> {
 // ----------------------------------------------------
 // Cloud Sync: INVITE CODES
 // ----------------------------------------------------
+//
+// Same "cloud is truth" principle as the leaderboard above -- a revoked
+// code must actually disappear everywhere, not get merged back in from a
+// stale local cache.
 
 export async function fetchInviteCodesCloud(): Promise<InviteCode[]> {
   const localKey = 'cissp_invite_codes';
-  const localData = localStorage.getItem(localKey);
-  let localCodes: InviteCode[] = [];
-  if (localData) {
-    try {
-      localCodes = JSON.parse(localData);
-    } catch (e) {
-      localCodes = [];
-    }
-  }
 
   try {
     const response = await fetch(`${BASE_URL}/invite_codes`, {
@@ -153,38 +145,28 @@ export async function fetchInviteCodesCloud(): Promise<InviteCode[]> {
       if (text && text.trim()) {
         const cloudCodes: InviteCode[] = JSON.parse(text);
         if (Array.isArray(cloudCodes)) {
-          // Merge local and cloud invite codes by code
-          const mergedMap = new Map<string, InviteCode>();
-          localCodes.forEach(c => {
-            if (c && c.code) mergedMap.set(c.code.toUpperCase(), c);
-          });
-          cloudCodes.forEach(c => {
-            if (c && c.code) {
-              const upperCode = c.code.toUpperCase();
-              const existing = mergedMap.get(upperCode);
-              if (existing) {
-                // Keep the higher usedCount to handle redemptions
-                mergedMap.set(upperCode, {
-                  ...c,
-                  usedCount: Math.max(existing.usedCount, c.usedCount)
-                });
-              } else {
-                mergedMap.set(upperCode, c);
-              }
-            }
-          });
-
-          const mergedList = Array.from(mergedMap.values());
-          localStorage.setItem(localKey, JSON.stringify(mergedList));
-          return mergedList;
+          localStorage.setItem(localKey, JSON.stringify(cloudCodes));
+          return cloudCodes;
         }
+      } else {
+        localStorage.setItem(localKey, JSON.stringify([]));
+        return [];
       }
     }
   } catch (error) {
     console.warn('Cloud Sync: Failed to fetch invite codes. Falling back to offline state.', error);
   }
 
-  return localCodes;
+  // Only reached if the cloud request itself failed (offline, network error).
+  const localData = localStorage.getItem(localKey);
+  if (localData) {
+    try {
+      return JSON.parse(localData);
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
 }
 
 export async function saveInviteCodesCloud(codes: InviteCode[]): Promise<boolean> {
@@ -222,11 +204,35 @@ export async function redeemInviteCodeCloud(code: string): Promise<boolean> {
 // ----------------------------------------------------
 // Cloud Sync: ADMIN PASSCODE
 // ----------------------------------------------------
+//
+// The admin passcode is never cached in localStorage. It used to be fetched
+// and stored there for every single visitor (even before they logged in)
+// just so the login form could compare it client-side -- which meant the
+// real admin password was sitting in plain text in any visitor's browser
+// storage. Login verification now happens server-side via
+// verifyAdminPasscodeCloud. fetchAdminPasscodeCloud/saveAdminPasscodeCloud
+// below are only used by the already-authenticated Admin Panel to
+// display/rotate the passcode.
+
+export async function verifyAdminPasscodeCloud(candidatePasscode: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${BASE_URL}/verify_admin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode: candidatePasscode })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return Boolean(data.isAdmin);
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to verify admin passcode.', error);
+  }
+  return false;
+}
 
 export async function fetchAdminPasscodeCloud(defaultPasscode: string): Promise<string> {
-  const localKey = 'cissp_admin_passcode';
-  const localPass = localStorage.getItem(localKey) || defaultPasscode;
-
   try {
     const response = await fetch(`${BASE_URL}/admin_passcode`, {
       method: 'GET',
@@ -236,22 +242,17 @@ export async function fetchAdminPasscodeCloud(defaultPasscode: string): Promise<
     if (response.ok) {
       const text = await response.text();
       if (text && text.trim()) {
-        const cloudPass = text.trim();
-        localStorage.setItem(localKey, cloudPass);
-        return cloudPass;
+        return text.trim();
       }
     }
   } catch (error) {
-    console.warn('Cloud Sync: Failed to fetch admin passcode. Falling back to offline state.', error);
+    console.warn('Cloud Sync: Failed to fetch admin passcode.', error);
   }
 
-  return localPass;
+  return defaultPasscode;
 }
 
 export async function saveAdminPasscodeCloud(passcode: string): Promise<boolean> {
-  const localKey = 'cissp_admin_passcode';
-  localStorage.setItem(localKey, passcode);
-
   try {
     const response = await fetch(`${BASE_URL}/admin_passcode`, {
       method: 'PUT',
@@ -264,4 +265,3 @@ export async function saveAdminPasscodeCloud(passcode: string): Promise<boolean>
     return false;
   }
 }
-
