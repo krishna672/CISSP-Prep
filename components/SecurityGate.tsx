@@ -8,8 +8,6 @@ import { InviteCode } from '../types';
 import { 
   fetchInviteCodesCloud, 
   redeemInviteCodeCloud, 
-  generateSignature, 
-  decodeNameFromCode,
   saveInviteCodesCloud,
   verifyAdminPasscodeCloud
 } from './cloudSync';
@@ -52,52 +50,17 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
         await saveInviteCodesCloud(loadedCodes);
       }
 
-      // Check query params to see if an invite was shared via URL
+      // If an invite code was shared via URL, pre-fill the input field only.
+      // It still has to match a code that already exists in the admin's
+      // registry to actually grant access (checked in handleSubmit) -- we
+      // never create/register a code just because someone typed or linked
+      // one in.
       const params = new URLSearchParams(window.location.search);
       const inviteParam = params.get('invite') || params.get('code');
       if (inviteParam) {
-        const cleanParam = inviteParam.trim().toUpperCase();
+        setPasscode(inviteParam.trim().toUpperCase());
 
-        // Let's decode if it's a signed invite code
-        const parts = cleanParam.split('-');
-        let hasValidSig = false;
-        let candidateName = `Candidate (${cleanParam})`;
-
-        if (parts.length === 4 && parts[0] === 'CISSP') {
-          const randomCode = parts[0] + '-' + parts[1];
-          const namePart = parts[2];
-          const sig = parts[3];
-          const expectedSig = generateSignature(randomCode, namePart);
-          
-          if (expectedSig === sig) {
-            hasValidSig = true;
-            candidateName = decodeNameFromCode(namePart);
-          }
-        }
-
-        // Guard against accidentally auto-registering the admin passcode
-        // itself as an invite code (checked server-side so the real
-        // passcode never needs to be known client-side).
-        const paramIsAdminPasscode = await verifyAdminPasscodeCloud(cleanParam);
-
-        // If it's not administrative and not already registered, auto-register it
-        if (!paramIsAdminPasscode && !loadedCodes.some(c => c.code.toUpperCase() === cleanParam)) {
-          // If it is a 4-part code but has an invalid signature, we don't auto-register it to maintain security
-          if (parts.length < 4 || hasValidSig) {
-            const importedCode: InviteCode = {
-              code: cleanParam,
-              createdAt: new Date().toISOString(),
-              createdBy: 'Shared Invitation Link',
-              usedCount: 0,
-              candidateName: candidateName
-            };
-            loadedCodes = [importedCode, ...loadedCodes];
-            await saveInviteCodesCloud(loadedCodes);
-          }
-        }
-        setPasscode(cleanParam);
-        
-        // Clean query params to keep the url neat and avoid re-importing on reload
+        // Clean query params to keep the url neat and avoid re-processing on reload
         try {
           const cleanUrl = window.location.pathname + window.location.hash;
           window.history.replaceState({}, document.title, cleanUrl);
@@ -166,86 +129,50 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     const freshCodes = await fetchInviteCodesCloud();
     setActiveCodes(freshCodes);
 
-    let matchedCodeIndex = freshCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
+    const matchedCodeIndex = freshCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
 
-    // Cryptographic signature check for invite link protection:
-    // If a code has 4 segments (e.g. CISSP-XXXXXX-NAME-SIGNATURE), we dynamically verify the signature.
-    // If signature is invalid, we block it immediately to prevent URL tampering.
-    const parts = inputUpper.split('-');
-    if (parts.length === 4 && parts[0] === 'CISSP') {
-      const randomCode = parts[0] + '-' + parts[1];
-      const namePart = parts[2];
-      const signaturePart = parts[3];
-      const computedSig = generateSignature(randomCode, namePart);
-
-      if (computedSig !== signaturePart) {
-        setError('Access Denied. Secure invite link signature is invalid or tampered.');
-        if (navigator.vibrate) navigator.vibrate(100);
-        return;
+    // Codes are never auto-created or auto-registered from user input --
+    // if it isn't already in the admin's registry, it's rejected outright.
+    if (matchedCodeIndex === -1) {
+      setError('Access Denied. Invalid Invite Code.');
+      if (navigator.vibrate) {
+        navigator.vibrate(100);
       }
-
-      // If valid signature but not in activeCodes yet, register it dynamically on the fly!
-      if (matchedCodeIndex === -1) {
-        const dynamicCode: InviteCode = {
-          code: inputUpper,
-          createdAt: new Date().toISOString(),
-          createdBy: 'Admin-Generated Invite (Secure verified)',
-          usedCount: 0,
-          candidateName: decodeNameFromCode(namePart)
-        };
-        const updatedCodes = [dynamicCode, ...freshCodes];
-        await saveInviteCodesCloud(updatedCodes);
-        setActiveCodes(updatedCodes);
-        matchedCodeIndex = 0; // point to newly added code
-      }
-    } else if (parts.length > 1 && parts[0] === 'CISSP' && matchedCodeIndex === -1) {
-      // Unsigned CISSP code that isn't in registry is denied
-      setError('Access Denied. Invalid or unregistered invite code.');
-      if (navigator.vibrate) navigator.vibrate(100);
       return;
     }
 
-    if (matchedCodeIndex !== -1) {
-      const targetCode = freshCodes[matchedCodeIndex];
-      const isAlreadyRedeemedOnDevice = redeemedCodesOnDevice.includes(targetCode.code.toUpperCase());
-      
-      // Enforce strictly 1 use per invite code, EXCEPT if it was already redeemed on this specific device
-      if (targetCode.usedCount >= 1 && !isAlreadyRedeemedOnDevice) {
-        setError('Access Denied. This invite code has already been redeemed and is limited to exactly 1 user.');
-        if (navigator.vibrate) {
-          navigator.vibrate(100);
-        }
-        return;
+    const targetCode = freshCodes[matchedCodeIndex];
+    const isAlreadyRedeemedOnDevice = redeemedCodesOnDevice.includes(targetCode.code.toUpperCase());
+
+    // Enforce strictly 1 use per invite code, EXCEPT if it was already redeemed on this specific device
+    if (targetCode.usedCount >= 1 && !isAlreadyRedeemedOnDevice) {
+      setError('Access Denied. This invite code has already been redeemed and is limited to exactly 1 user.');
+      if (navigator.vibrate) {
+        navigator.vibrate(100);
       }
-
-      setSuccess(true);
-      setSuccessMessage('Invite Code Accepted. Loading Candidate Vault...');
-
-      // Increment usage count in local & cloud ONLY if this is the first redemption on this device
-      if (!isAlreadyRedeemedOnDevice) {
-        await redeemInviteCodeCloud(targetCode.code);
-        
-        const newRedeemedList = [...redeemedCodesOnDevice, targetCode.code.toUpperCase()];
-        localStorage.setItem('cissp_my_redeemed_codes', JSON.stringify(newRedeemedList));
-        setRedeemedCodesOnDevice(newRedeemedList);
-      }
-      
-      // Save session info
-      sessionStorage.setItem('cissp_vault_auth', 'true');
-      sessionStorage.setItem('cissp_vault_admin', 'false');
-      sessionStorage.setItem('cissp_vault_code', targetCode.code.toUpperCase());
-
-      setTimeout(() => {
-        onUnlock(false);
-      }, 1000);
       return;
     }
 
-    // Deny access
-    setError('Access Denied. Invalid Invite Code.');
-    if (navigator.vibrate) {
-      navigator.vibrate(100);
+    setSuccess(true);
+    setSuccessMessage('Invite Code Accepted. Loading Candidate Vault...');
+
+    // Increment usage count in local & cloud ONLY if this is the first redemption on this device
+    if (!isAlreadyRedeemedOnDevice) {
+      await redeemInviteCodeCloud(targetCode.code);
+
+      const newRedeemedList = [...redeemedCodesOnDevice, targetCode.code.toUpperCase()];
+      localStorage.setItem('cissp_my_redeemed_codes', JSON.stringify(newRedeemedList));
+      setRedeemedCodesOnDevice(newRedeemedList);
     }
+
+    // Save session info
+    sessionStorage.setItem('cissp_vault_auth', 'true');
+    sessionStorage.setItem('cissp_vault_admin', 'false');
+    sessionStorage.setItem('cissp_vault_code', targetCode.code.toUpperCase());
+
+    setTimeout(() => {
+      onUnlock(false);
+    }, 1000);
   };
 
   return (
