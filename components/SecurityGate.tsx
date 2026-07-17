@@ -10,7 +10,8 @@ import {
   redeemInviteCodeCloud, 
   generateSignature, 
   decodeNameFromCode,
-  saveInviteCodesCloud
+  saveInviteCodesCloud,
+  fetchAdminPasscodeCloud
 } from './cloudSync';
 
 interface SecurityGateProps {
@@ -44,6 +45,10 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
 
     // 2. Fetch and sync invite codes (Local + Cloud merge)
     const loadAndSyncCodes = async () => {
+      // Sync admin passcode with cloud
+      const syncedAdminPass = await fetchAdminPasscodeCloud(DEFAULT_ADMIN_PASSCODE);
+      setAdminPasscode(syncedAdminPass);
+
       let loadedCodes = await fetchInviteCodesCloud();
       
       if (loadedCodes.length === 0) {
@@ -144,8 +149,12 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     const inputPass = passcode.trim();
     const inputUpper = inputPass.toUpperCase();
 
+    // Fetch the latest admin passcode from cloud to allow access from any machine
+    const freshAdminPass = await fetchAdminPasscodeCloud(DEFAULT_ADMIN_PASSCODE);
+    setAdminPasscode(freshAdminPass);
+
     // Check if it's the admin passcode
-    if (inputPass === adminPasscode) {
+    if (inputPass === freshAdminPass) {
       setSuccess(true);
       setSuccessMessage('Administrator Credentials Accepted. Unlocking Admin console...');
       

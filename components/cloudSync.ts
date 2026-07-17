@@ -219,3 +219,50 @@ export async function redeemInviteCodeCloud(code: string): Promise<boolean> {
   }
   return false;
 }
+
+// ----------------------------------------------------
+// Cloud Sync: ADMIN PASSCODE
+// ----------------------------------------------------
+
+export async function fetchAdminPasscodeCloud(defaultPasscode: string): Promise<string> {
+  const localKey = 'cissp_admin_passcode';
+  const localPass = localStorage.getItem(localKey) || defaultPasscode;
+
+  try {
+    const response = await fetch(`${BASE_URL}/admin_passcode`, {
+      method: 'GET',
+      headers: { 'Accept': 'text/plain' }
+    });
+
+    if (response.ok) {
+      const text = await response.text();
+      if (text && text.trim()) {
+        const cloudPass = text.trim();
+        localStorage.setItem(localKey, cloudPass);
+        return cloudPass;
+      }
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to fetch admin passcode. Falling back to offline state.', error);
+  }
+
+  return localPass;
+}
+
+export async function saveAdminPasscodeCloud(passcode: string): Promise<boolean> {
+  const localKey = 'cissp_admin_passcode';
+  localStorage.setItem(localKey, passcode);
+
+  try {
+    const response = await fetch(`${BASE_URL}/admin_passcode`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain' },
+      body: passcode
+    });
+    return response.ok;
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to save admin passcode to cloud.', error);
+    return false;
+  }
+}
+

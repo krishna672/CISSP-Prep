@@ -14,7 +14,9 @@ import {
   fetchLeaderboardCloud, 
   saveLeaderboardCloud, 
   generateSignature, 
-  encodeNameForCode 
+  encodeNameForCode,
+  fetchAdminPasscodeCloud,
+  saveAdminPasscodeCloud
 } from './cloudSync';
 
 const DEFAULT_ADMIN_PASSCODE = 'ADMIN2026';
@@ -114,16 +116,11 @@ const AdminPanel: React.FC = () => {
 
   // Load invite codes, admin passcode, and generated questions pool
   useEffect(() => {
-    // Admin Passcode
-    const storedAdminPass = localStorage.getItem('cissp_admin_passcode');
-    if (storedAdminPass) {
-      setAdminPasscode(storedAdminPass);
-    } else {
-      localStorage.setItem('cissp_admin_passcode', DEFAULT_ADMIN_PASSCODE);
-    }
-
-    // Invite Codes
+    // Load and sync admin passcode & invite codes from cloud
     const loadCodes = async () => {
+      const syncedAdminPass = await fetchAdminPasscodeCloud(DEFAULT_ADMIN_PASSCODE);
+      setAdminPasscode(syncedAdminPass);
+
       const codes = await fetchInviteCodesCloud();
       if (codes.length > 0) {
         setInviteCodes(codes);
@@ -443,7 +440,7 @@ const AdminPanel: React.FC = () => {
   };
 
   // Rotate Admin Passcode
-  const handleRotateAdminPasscode = (e: React.FormEvent) => {
+  const handleRotateAdminPasscode = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasscodeError('');
     setPasscodeSuccess('');
@@ -463,12 +460,16 @@ const AdminPanel: React.FC = () => {
       return;
     }
 
-    localStorage.setItem('cissp_admin_passcode', newPasscode);
-    setAdminPasscode(newPasscode);
-    setPasscodeSuccess('Master admin passcode updated successfully!');
-    setOldPasscode('');
-    setNewPasscode('');
-    setConfirmPasscode('');
+    const isSaved = await saveAdminPasscodeCloud(newPasscode);
+    if (isSaved) {
+      setAdminPasscode(newPasscode);
+      setPasscodeSuccess('Master admin passcode updated successfully in cloud and locally!');
+      setOldPasscode('');
+      setNewPasscode('');
+      setConfirmPasscode('');
+    } else {
+      setPasscodeError('Failed to synchronize the new passcode with the cloud. Please check your connection and try again.');
+    }
   };
 
   // AI Question Generation Lab
