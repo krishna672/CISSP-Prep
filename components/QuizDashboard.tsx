@@ -222,7 +222,7 @@ const QuizDashboard: React.FC = () => {
 
     // Record score on leaderboard
     if (state.questions.length > 0) {
-      const activeCode = sessionStorage.getItem('cissp_vault_code') || 'CISSP2026';
+      const activeCode = sessionStorage.getItem('cissp_vault_code') || 'UNKNOWN';
       let candidateName = '';
       const storedCodes = localStorage.getItem('cissp_invite_codes');
       if (storedCodes) {
@@ -238,8 +238,6 @@ const QuizDashboard: React.FC = () => {
       if (!candidateName) {
         if (activeCode === 'ADMIN') {
           candidateName = 'System Administrator';
-        } else if (activeCode === 'CISSP2026') {
-          candidateName = 'Default Student';
         } else {
           candidateName = `Candidate (${activeCode})`;
         }
