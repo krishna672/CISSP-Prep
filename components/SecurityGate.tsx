@@ -4,17 +4,17 @@ import {
   AlertCircle, CheckCircle, Map, BookOpen, GraduationCap, 
   Layers, ShieldCheck, ChevronRight
 } from 'lucide-react';
+import { InviteCode } from '../types';
+import { 
+  fetchInviteCodesCloud, 
+  redeemInviteCodeCloud, 
+  generateSignature, 
+  decodeNameFromCode,
+  saveInviteCodesCloud
+} from './cloudSync';
 
 interface SecurityGateProps {
   onUnlock: (isAdmin: boolean) => void;
-}
-
-interface InviteCode {
-  code: string;
-  createdAt: string;
-  createdBy: string;
-  usedCount: number;
-  candidateName?: string;
 }
 
 const DEFAULT_INVITE_CODE = 'CISSP2026';
@@ -42,13 +42,11 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       localStorage.setItem('cissp_admin_passcode', DEFAULT_ADMIN_PASSCODE);
     }
 
-    // 2. Invite codes
-    const storedCodes = localStorage.getItem('cissp_invite_codes');
-    let loadedCodes: InviteCode[] = [];
-    if (storedCodes) {
-      try {
-        loadedCodes = JSON.parse(storedCodes);
-      } catch (e) {
+    // 2. Fetch and sync invite codes (Local + Cloud merge)
+    const loadAndSyncCodes = async () => {
+      let loadedCodes = await fetchInviteCodesCloud();
+      
+      if (loadedCodes.length === 0) {
         loadedCodes = [
           {
             code: DEFAULT_INVITE_CODE,
@@ -57,51 +55,63 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
             usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
           }
         ];
-        localStorage.setItem('cissp_invite_codes', JSON.stringify(loadedCodes));
+        await saveInviteCodesCloud(loadedCodes);
       }
-    } else {
-      loadedCodes = [
-        {
-          code: DEFAULT_INVITE_CODE,
-          createdAt: new Date().toISOString(),
-          createdBy: 'System Default',
-          usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
+
+      // Check query params to see if an invite was shared via URL
+      const params = new URLSearchParams(window.location.search);
+      const inviteParam = params.get('invite') || params.get('code');
+      if (inviteParam) {
+        const cleanParam = inviteParam.trim().toUpperCase();
+        const finalAdminPass = storedAdminPass || DEFAULT_ADMIN_PASSCODE;
+        
+        // Let's decode if it's a signed invite code
+        const parts = cleanParam.split('-');
+        let hasValidSig = false;
+        let candidateName = `Candidate (${cleanParam})`;
+
+        if (parts.length === 4 && parts[0] === 'CISSP') {
+          const randomCode = parts[0] + '-' + parts[1];
+          const namePart = parts[2];
+          const sig = parts[3];
+          const expectedSig = generateSignature(randomCode, namePart);
+          
+          if (expectedSig === sig) {
+            hasValidSig = true;
+            candidateName = decodeNameFromCode(namePart);
+          }
         }
-      ];
-      localStorage.setItem('cissp_invite_codes', JSON.stringify(loadedCodes));
-    }
 
-    // Check query params to see if an invite was shared via URL
-    const params = new URLSearchParams(window.location.search);
-    const inviteParam = params.get('invite') || params.get('code');
-    if (inviteParam) {
-      const cleanParam = inviteParam.trim().toUpperCase();
-      const finalAdminPass = storedAdminPass || DEFAULT_ADMIN_PASSCODE;
-      
-      // If it's not administrative and not already registered, auto-register it locally
-      if (cleanParam !== finalAdminPass.toUpperCase() && !loadedCodes.some(c => c.code.toUpperCase() === cleanParam)) {
-        const importedCode: InviteCode = {
-          code: cleanParam,
-          createdAt: new Date().toISOString(),
-          createdBy: 'Shared Invitation Link',
-          usedCount: 0,
-          candidateName: `Candidate (${cleanParam})`
-        };
-        loadedCodes = [importedCode, ...loadedCodes];
-        localStorage.setItem('cissp_invite_codes', JSON.stringify(loadedCodes));
+        // If it's not administrative and not already registered, auto-register it
+        if (cleanParam !== finalAdminPass.toUpperCase() && !loadedCodes.some(c => c.code.toUpperCase() === cleanParam)) {
+          // If it is a 4-part code but has an invalid signature, we don't auto-register it to maintain security
+          if (parts.length < 4 || hasValidSig) {
+            const importedCode: InviteCode = {
+              code: cleanParam,
+              createdAt: new Date().toISOString(),
+              createdBy: 'Shared Invitation Link',
+              usedCount: 0,
+              candidateName: candidateName
+            };
+            loadedCodes = [importedCode, ...loadedCodes];
+            await saveInviteCodesCloud(loadedCodes);
+          }
+        }
+        setPasscode(cleanParam);
+        
+        // Clean query params to keep the url neat and avoid re-importing on reload
+        try {
+          const cleanUrl = window.location.pathname + window.location.hash;
+          window.history.replaceState({}, document.title, cleanUrl);
+        } catch (e) {
+          console.error("Failed to clean query parameters from URL:", e);
+        }
       }
-      setPasscode(cleanParam);
-      
-      // Clean query params to keep the url neat and avoid re-importing on reload
-      try {
-        const cleanUrl = window.location.pathname + window.location.hash;
-        window.history.replaceState({}, document.title, cleanUrl);
-      } catch (e) {
-        console.error("Failed to clean query parameters from URL:", e);
-      }
-    }
 
-    setActiveCodes(loadedCodes);
+      setActiveCodes(loadedCodes);
+    };
+
+    loadAndSyncCodes();
 
     // 3. Track codes already successfully redeemed on this specific device
     const storedRedeemed = localStorage.getItem('cissp_my_redeemed_codes');
@@ -114,7 +124,7 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     }
   }, []);
 
-  const initializeDefaultCodes = () => {
+  const initializeDefaultCodes = async () => {
     const defaultList: InviteCode[] = [
       {
         code: DEFAULT_INVITE_CODE,
@@ -123,11 +133,11 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
         usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
       }
     ];
-    localStorage.setItem('cissp_invite_codes', JSON.stringify(defaultList));
+    await saveInviteCodesCloud(defaultList);
     setActiveCodes(defaultList);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     
@@ -150,28 +160,51 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       return;
     }
 
-    // Check if it matches any active invite code in the dynamic list
-    let matchedCodeIndex = activeCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
+    // Load fresh codes from cloud first to ensure up-to-date validation
+    const freshCodes = await fetchInviteCodesCloud();
+    setActiveCodes(freshCodes);
 
-    // Dynamic offline verification fallback:
-    // If no direct local match, but starts with 'CISSP-' and has a valid structure (e.g. 'CISSP-XXXXXX'),
-    // we dynamically register it on the fly on the candidate's device.
-    if (matchedCodeIndex === -1 && inputUpper.startsWith('CISSP-') && inputUpper.length >= 10) {
-      const dynamicCode: InviteCode = {
-        code: inputUpper,
-        createdAt: new Date().toISOString(),
-        createdBy: 'Admin-Generated Invite (Verified offline)',
-        usedCount: 0,
-        candidateName: `Candidate (${inputUpper})`
-      };
-      const updatedCodes = [dynamicCode, ...activeCodes];
-      localStorage.setItem('cissp_invite_codes', JSON.stringify(updatedCodes));
-      setActiveCodes(updatedCodes);
-      matchedCodeIndex = 0; // point to the newly added code
+    let matchedCodeIndex = freshCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
+
+    // Cryptographic signature check for invite link protection:
+    // If a code has 4 segments (e.g. CISSP-XXXXXX-NAME-SIGNATURE), we dynamically verify the signature.
+    // If signature is invalid, we block it immediately to prevent URL tampering.
+    const parts = inputUpper.split('-');
+    if (parts.length === 4 && parts[0] === 'CISSP') {
+      const randomCode = parts[0] + '-' + parts[1];
+      const namePart = parts[2];
+      const signaturePart = parts[3];
+      const computedSig = generateSignature(randomCode, namePart);
+
+      if (computedSig !== signaturePart) {
+        setError('Access Denied. Secure invite link signature is invalid or tampered.');
+        if (navigator.vibrate) navigator.vibrate(100);
+        return;
+      }
+
+      // If valid signature but not in activeCodes yet, register it dynamically on the fly!
+      if (matchedCodeIndex === -1) {
+        const dynamicCode: InviteCode = {
+          code: inputUpper,
+          createdAt: new Date().toISOString(),
+          createdBy: 'Admin-Generated Invite (Secure verified)',
+          usedCount: 0,
+          candidateName: decodeNameFromCode(namePart)
+        };
+        const updatedCodes = [dynamicCode, ...freshCodes];
+        await saveInviteCodesCloud(updatedCodes);
+        setActiveCodes(updatedCodes);
+        matchedCodeIndex = 0; // point to newly added code
+      }
+    } else if (parts.length > 1 && parts[0] === 'CISSP' && matchedCodeIndex === -1) {
+      // Unsigned CISSP code that isn't in registry is denied
+      setError('Access Denied. Invalid or unregistered invite code.');
+      if (navigator.vibrate) navigator.vibrate(100);
+      return;
     }
 
     if (matchedCodeIndex !== -1) {
-      const targetCode = activeCodes[matchedCodeIndex];
+      const targetCode = freshCodes[matchedCodeIndex];
       const isAlreadyRedeemedOnDevice = redeemedCodesOnDevice.includes(targetCode.code.toUpperCase());
       
       // Enforce strictly 1 use per invite code, EXCEPT if it was already redeemed on this specific device
@@ -186,11 +219,9 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       setSuccess(true);
       setSuccessMessage('Invite Code Accepted. Loading Candidate Vault...');
 
-      // Increment usage count in localStorage ONLY if this is the first redemption on this device
-      const updatedCodes = [...activeCodes];
+      // Increment usage count in local & cloud ONLY if this is the first redemption on this device
       if (!isAlreadyRedeemedOnDevice) {
-        updatedCodes[matchedCodeIndex].usedCount += 1;
-        localStorage.setItem('cissp_invite_codes', JSON.stringify(updatedCodes));
+        await redeemInviteCodeCloud(targetCode.code);
         
         const newRedeemedList = [...redeemedCodesOnDevice, targetCode.code.toUpperCase()];
         localStorage.setItem('cissp_my_redeemed_codes', JSON.stringify(newRedeemedList));

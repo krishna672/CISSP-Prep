@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
-import { Question, QuizState } from '../types';
+import { Question, QuizState, LeaderboardEntry } from '../types';
 import { questions as staticQuestions } from '../data/questionData';
 import { mindMapData } from '../data/mindMapData';
 import { Play, Clock, CheckCircle, XCircle, Award, Target, Settings2, ArrowRight, RotateCcw, Check, Loader2, Sparkles, ChevronDown, ListChecks, BrainCircuit, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
+import { submitLeaderboardEntryCloud } from './cloudSync';
 
 const getCombinedQuestions = (): Question[] => {
   const stored = localStorage.getItem('cissp_generated_questions');
@@ -214,7 +215,7 @@ const QuizDashboard: React.FC = () => {
     setState(prev => ({ ...prev, userAnswers: { ...prev.userAnswers, [prev.questions[prev.currentIndex].id]: optionKey } }));
   };
 
-  const submitQuiz = () => {
+  const submitQuiz = async () => {
     let score = 0;
     state.questions.forEach(q => { if (state.userAnswers[q.id] === q.correctOption) score++; });
     setState(prev => ({ ...prev, isReview: true, score }));
@@ -244,16 +245,8 @@ const QuizDashboard: React.FC = () => {
         }
       }
 
-      let leaderboard = [];
-      const storedLeaderboard = localStorage.getItem('cissp_leaderboard');
-      if (storedLeaderboard) {
-        try {
-          leaderboard = JSON.parse(storedLeaderboard);
-        } catch (e) {}
-      }
-
       const scorePercent = Math.round((score / state.questions.length) * 100);
-      const newEntry = {
+      const newEntry: LeaderboardEntry = {
         id: `quiz-${Date.now()}`,
         code: activeCode,
         name: candidateName,
@@ -264,8 +257,7 @@ const QuizDashboard: React.FC = () => {
         passed: scorePercent >= 70
       };
 
-      leaderboard.unshift(newEntry);
-      localStorage.setItem('cissp_leaderboard', JSON.stringify(leaderboard));
+      await submitLeaderboardEntryCloud(newEntry);
     }
   };
 

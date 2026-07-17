@@ -1,9 +1,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Question } from '../types';
+import { Question, LeaderboardEntry } from '../types';
 import { Shield, Clock, BrainCircuit, Loader2, Sparkles, AlertCircle, Trophy, History, RefreshCcw, Activity, GraduationCap, BarChart3, Settings2, Sliders, Download, FileText, CheckCircle2, XCircle, ArrowRight, Gauge, Check, Info } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { questions as staticQuestions } from '../data/questionData';
+import { submitLeaderboardEntryCloud } from './cloudSync';
+
 
 // Official CISSP Weights (2024 Standard)
 const DOMAIN_WEIGHTS: { [key: string]: number } = {
@@ -50,6 +52,35 @@ const getCombinedQuestions = (): Question[] => {
   return combined;
 };
 
+const shuffleOptions = (question: Question): Question => {
+  const optionKeys = ['A', 'B', 'C', 'D'] as const;
+  const originalCorrectText = question.options[question.correctOption as 'A' | 'B' | 'C' | 'D'];
+  
+  // Shuffle options randomly
+  const shuffledKeys = [...optionKeys].sort(() => Math.random() - 0.5);
+  const newOptions: { A: string; B: string; C: string; D: string } = {
+    A: question.options[shuffledKeys[0]],
+    B: question.options[shuffledKeys[1]],
+    C: question.options[shuffledKeys[2]],
+    D: question.options[shuffledKeys[3]],
+  };
+
+  // Find the new key of the original correct option text
+  let newCorrectOption: 'A' | 'B' | 'C' | 'D' = 'C';
+  for (const k of optionKeys) {
+    if (newOptions[k] === originalCorrectText) {
+      newCorrectOption = k;
+      break;
+    }
+  }
+
+  return {
+    ...question,
+    options: newOptions,
+    correctOption: newCorrectOption,
+  };
+};
+
 const getOfflineQuestion = (domain: string, difficulty: string, history: any[]): Question => {
   const usedIds = new Set(history.map(h => h.question.id));
   const cleanDomain = domain.toLowerCase();
@@ -77,13 +108,13 @@ const getOfflineQuestion = (domain: string, difficulty: string, history: any[]):
 
   const baseQuestion = bestMatches[Math.floor(Math.random() * bestMatches.length)];
   if (baseQuestion) {
-    return {
+    return shuffleOptions({
       ...baseQuestion,
       id: `${baseQuestion.id}-offline-${history.length}`
-    };
+    });
   }
 
-  return {
+  return shuffleOptions({
     id: `fallback-q-${history.length}`,
     domain: domain,
     subdomain: "Security Management",
@@ -97,7 +128,7 @@ const getOfflineQuestion = (domain: string, difficulty: string, history: any[]):
     },
     correctOption: "C",
     explanation: "Business alignment and senior management approval/buy-in is always the foundational requirement for any security posture or decision in the CISSP curriculum."
-  };
+  });
 };
 
 type ExamStatus = 'IDLE' | 'SETTINGS' | 'LOADING' | 'TESTING' | 'FINISHED';
@@ -178,20 +209,12 @@ const ExamSimulator: React.FC = () => {
         }
       }
 
-      let leaderboard = [];
-      const storedLeaderboard = localStorage.getItem('cissp_leaderboard');
-      if (storedLeaderboard) {
-        try {
-          leaderboard = JSON.parse(storedLeaderboard);
-        } catch (e) {}
-      }
-
       // Check if we already logged this specific finished session to avoid duplicates
       const sessionKey = `cissp_exam_session_${state.questionHistory.length}_${state.abilityEstimate}`;
       const isAlreadyLogged = sessionStorage.getItem(sessionKey) === 'true';
       if (!isAlreadyLogged) {
         sessionStorage.setItem(sessionKey, 'true');
-        const newEntry = {
+        const newEntry: LeaderboardEntry = {
           id: `cat-${Date.now()}`,
           code: activeCode,
           name: candidateName,
@@ -202,8 +225,8 @@ const ExamSimulator: React.FC = () => {
           passed: state.abilityEstimate >= PASSING_SCORE
         };
 
-        leaderboard.unshift(newEntry);
-        localStorage.setItem('cissp_leaderboard', JSON.stringify(leaderboard));
+        // Fire and forget async call to submit score
+        submitLeaderboardEntryCloud(newEntry).catch(e => console.error("Leaderboard submit failed", e));
       }
     }
   }, [state.status, state.abilityEstimate, state.questionHistory]);

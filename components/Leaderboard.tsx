@@ -3,17 +3,8 @@ import {
   Trophy, Medal, Search, Calendar, Award, RefreshCw, 
   Trash2, ShieldCheck, CheckCircle2, XCircle, Clock, BookOpen, GraduationCap 
 } from 'lucide-react';
-
-interface LeaderboardEntry {
-  id: string;
-  code: string;
-  name: string;
-  score: number;
-  type: 'CAT Exam' | 'Practice Quiz';
-  questionsCount: number;
-  timestamp: string;
-  passed: boolean;
-}
+import { fetchLeaderboardCloud, clearLeaderboardCloud } from './cloudSync';
+import { LeaderboardEntry } from '../types';
 
 const Leaderboard: React.FC = () => {
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
@@ -21,6 +12,7 @@ const Leaderboard: React.FC = () => {
   const [filterType, setFilterType] = useState<'All' | 'CAT Exam' | 'Practice Quiz'>('All');
   const [isAdmin, setIsAdmin] = useState(false);
   const [pendingClear, setPendingClear] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Load entries and admin state
   useEffect(() => {
@@ -28,33 +20,21 @@ const Leaderboard: React.FC = () => {
     loadLeaderboard();
   }, []);
 
-  const loadLeaderboard = () => {
-    const stored = localStorage.getItem('cissp_leaderboard');
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as LeaderboardEntry[];
-        // Filter out any older mock/dummy data to ensure the board is clean of simulated records
-        const genuineEntries = parsed.filter(entry => !entry.id.startsWith('mock-'));
-        if (genuineEntries.length !== parsed.length) {
-          localStorage.setItem('cissp_leaderboard', JSON.stringify(genuineEntries));
-        }
-        setEntries(genuineEntries);
-      } catch (e) {
-        setEntries([]);
-      }
-    } else {
-      setEntries([]);
-    }
+  const loadLeaderboard = async () => {
+    setIsLoading(true);
+    const genuineEntries = await fetchLeaderboardCloud();
+    setEntries(genuineEntries);
+    setIsLoading(false);
   };
 
   // Clear leaderboard (Admin only)
-  const handleClearLeaderboard = () => {
+  const handleClearLeaderboard = async () => {
     if (!pendingClear) {
       setPendingClear(true);
       setTimeout(() => setPendingClear(false), 4000);
       return;
     }
-    localStorage.setItem('cissp_leaderboard', JSON.stringify([]));
+    await clearLeaderboardCloud();
     setEntries([]);
     setPendingClear(false);
   };
@@ -101,7 +81,7 @@ const Leaderboard: React.FC = () => {
               className="p-2.5 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors border border-slate-200 bg-white"
               title="Refresh Leaderboard"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
             </button>
             {isAdmin && entries.length > 0 && (
               <button

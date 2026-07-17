@@ -58,3 +58,22 @@ export enum AppTab {
   ADMIN = 'ADMIN',
   LEADERBOARD = 'LEADERBOARD'
 }
+
+export interface InviteCode {
+  code: string;
+  createdAt: string;
+  createdBy: string;
+  usedCount: number;
+  candidateName?: string;
+}
+
+export interface LeaderboardEntry {
+  id: string;
+  code: string;
+  name: string;
+  score: number;
+  type: 'CAT Exam' | 'Practice Quiz';
+  questionsCount: number;
+  timestamp: string;
+  passed: boolean;
+}

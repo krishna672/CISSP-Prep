@@ -6,16 +6,16 @@ import {
   Trophy, Upload, Download, Search, Calendar, FileText, Link
 } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { Question } from '../types';
+import { Question, InviteCode } from '../types';
 import { questions as staticQuestions } from '../data/questionData';
-
-interface InviteCode {
-  code: string;
-  createdAt: string;
-  createdBy: string;
-  usedCount: number;
-  candidateName?: string;
-}
+import { 
+  fetchInviteCodesCloud, 
+  saveInviteCodesCloud, 
+  fetchLeaderboardCloud, 
+  saveLeaderboardCloud, 
+  generateSignature, 
+  encodeNameForCode 
+} from './cloudSync';
 
 const DEFAULT_ADMIN_PASSCODE = 'ADMIN2026';
 const DEFAULT_INVITE_CODE = 'CISSP2026';
@@ -123,16 +123,15 @@ const AdminPanel: React.FC = () => {
     }
 
     // Invite Codes
-    const storedCodes = localStorage.getItem('cissp_invite_codes');
-    if (storedCodes) {
-      try {
-        setInviteCodes(JSON.parse(storedCodes));
-      } catch (e) {
+    const loadCodes = async () => {
+      const codes = await fetchInviteCodesCloud();
+      if (codes.length > 0) {
+        setInviteCodes(codes);
+      } else {
         initializeDefaultCodes();
       }
-    } else {
-      initializeDefaultCodes();
-    }
+    };
+    loadCodes();
 
     // Generated Questions Pool
     const storedPool = localStorage.getItem('cissp_generated_questions');
@@ -148,38 +147,25 @@ const AdminPanel: React.FC = () => {
   // Load leaderboard whenever adminTab switches to 'leaderboard'
   useEffect(() => {
     if (adminTab === 'leaderboard') {
-      const stored = localStorage.getItem('cissp_leaderboard');
-      if (stored) {
-        try {
-          setLeaderboardEntries(JSON.parse(stored));
-        } catch (e) {
-          console.error("Failed to parse leaderboard:", e);
-          setLeaderboardEntries([]);
-        }
-      } else {
-        setLeaderboardEntries([]);
-      }
+      const loadLeaderboard = async () => {
+        const entries = await fetchLeaderboardCloud();
+        setLeaderboardEntries(entries);
+      };
+      loadLeaderboard();
     }
   }, [adminTab]);
 
   // Handle individual leaderboard entry deletion
-  const handleDeleteLeaderboardEntry = (id: string) => {
+  const handleDeleteLeaderboardEntry = async (id: string) => {
     if (leaderboardPendingDelete !== id) {
       setLeaderboardPendingDelete(id);
       return;
     }
 
-    const stored = localStorage.getItem('cissp_leaderboard');
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored) as any[];
-        const filtered = parsed.filter(entry => entry.id !== id);
-        localStorage.setItem('cissp_leaderboard', JSON.stringify(filtered));
-        setLeaderboardEntries(filtered);
-      } catch (e) {
-        console.error(e);
-      }
-    }
+    const currentEntries = await fetchLeaderboardCloud();
+    const filtered = currentEntries.filter(entry => entry.id !== id);
+    await saveLeaderboardCloud(filtered);
+    setLeaderboardEntries(filtered);
     setLeaderboardPendingDelete(null);
   };
 
@@ -362,7 +348,7 @@ const AdminPanel: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const initializeDefaultCodes = () => {
+  const initializeDefaultCodes = async () => {
     const defaultList: InviteCode[] = [
       {
         code: DEFAULT_INVITE_CODE,
@@ -371,7 +357,7 @@ const AdminPanel: React.FC = () => {
         usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
       }
     ];
-    localStorage.setItem('cissp_invite_codes', JSON.stringify(defaultList));
+    await saveInviteCodesCloud(defaultList);
     setInviteCodes(defaultList);
   };
 
@@ -387,10 +373,10 @@ const AdminPanel: React.FC = () => {
   };
 
   // Create custom or random invite code
-  const handleCreateCode = (e: React.FormEvent) => {
+  const handleCreateCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setCreateError('');
-    const cleanCode = newCodeInput.trim().toUpperCase();
+    let cleanCode = newCodeInput.trim().toUpperCase();
     
     if (!cleanCode) return;
     if (cleanCode.length < 4) {
@@ -398,35 +384,45 @@ const AdminPanel: React.FC = () => {
       return;
     }
 
-    if (inviteCodes.some(c => c.code === cleanCode)) {
+    if (!cleanCode.startsWith('CISSP-')) {
+      cleanCode = `CISSP-${cleanCode}`;
+    }
+
+    // Embed name and cryptographic checksum for 100% URL tampering protection
+    const candidateName = candidateNameInput.trim() || 'STUDENT';
+    const safeName = encodeNameForCode(candidateName);
+    const signature = generateSignature(cleanCode, safeName);
+    const secureCode = `${cleanCode}-${safeName}-${signature}`;
+
+    if (inviteCodes.some(c => c.code === secureCode)) {
       setCreateError('This invite code already exists.');
       return;
     }
 
     const newCodeObj: InviteCode = {
-      code: cleanCode,
+      code: secureCode,
       createdAt: new Date().toISOString(),
       createdBy: 'Administrator',
       usedCount: 0,
-      candidateName: candidateNameInput.trim() || `Candidate (${cleanCode})`
+      candidateName: candidateName
     };
 
     const updated = [newCodeObj, ...inviteCodes];
-    localStorage.setItem('cissp_invite_codes', JSON.stringify(updated));
+    await saveInviteCodesCloud(updated);
     setInviteCodes(updated);
     setNewCodeInput('');
     setCandidateNameInput('');
   };
 
   // Delete/Revoke a code
-  const handleRevokeCode = (codeToRevoke: string) => {
+  const handleRevokeCode = async (codeToRevoke: string) => {
     if (codePendingDelete !== codeToRevoke) {
       setCodePendingDelete(codeToRevoke);
       return;
     }
 
     const updated = inviteCodes.filter(c => c.code !== codeToRevoke);
-    localStorage.setItem('cissp_invite_codes', JSON.stringify(updated));
+    await saveInviteCodesCloud(updated);
     setInviteCodes(updated);
     setCodePendingDelete(null);
   };
