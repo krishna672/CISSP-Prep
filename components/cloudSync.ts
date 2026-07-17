@@ -1,7 +1,6 @@
 import { InviteCode, LeaderboardEntry } from '../types';
 
-const BUCKET_ID = 'cissp_vault_dd7569483353480e';
-const BASE_URL = `https://kvdb.io/${BUCKET_ID}`;
+const BASE_URL = '/api';
 
 const SECRET_SALT = 'CISSP-SECURE-SALT-2026-XyZ789';
 
