@@ -34,7 +34,17 @@ const DEFAULT_CODES = JSON.stringify([
 ]);
 
 export const handler = async (event: any) => {
-  const store = getStore('cissp-vault');
+  const store = getStore({
+    name: 'cissp-vault',
+    // Netlify's automatic zero-config Blobs detection has been unreliable on
+    // some sites (MissingBlobsEnvironmentError even though everything is set
+    // up correctly per the docs). Passing siteID + token explicitly sidesteps
+    // that entirely. SITE_ID is always available at runtime; BLOBS_TOKEN must
+    // be set in Site settings -> Environment variables (a Netlify Personal
+    // Access Token, scoped to Functions).
+    siteID: process.env.SITE_ID,
+    token: process.env.BLOBS_TOKEN,
+  });
 
   if (event.httpMethod === 'GET') {
     try {

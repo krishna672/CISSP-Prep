@@ -27,7 +27,35 @@ function decrypt(text: string): string {
 }
 
 export const handler = async (event: any) => {
-  const store = getStore('cissp-vault');
+  // Temporary diagnostic: hit /api/leaderboard?diag=1 to see, without
+  // exposing secret values, whether the required env vars are actually
+  // reaching this function. Remove this block once things are confirmed
+  // working.
+  if (event.queryStringParameters && event.queryStringParameters.diag === '1') {
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        SITE_ID_present: Boolean(process.env.SITE_ID),
+        BLOBS_TOKEN_present: Boolean(process.env.BLOBS_TOKEN),
+        BLOBS_TOKEN_length: process.env.BLOBS_TOKEN ? process.env.BLOBS_TOKEN.length : 0,
+        NODE_ENV: process.env.NODE_ENV || null,
+        CONTEXT: process.env.CONTEXT || null,
+      }),
+    };
+  }
+
+  const store = getStore({
+    name: 'cissp-vault',
+    // Netlify's automatic zero-config Blobs detection has been unreliable on
+    // some sites (MissingBlobsEnvironmentError even though everything is set
+    // up correctly per the docs). Passing siteID + token explicitly sidesteps
+    // that entirely. SITE_ID is always available at runtime; BLOBS_TOKEN must
+    // be set in Site settings -> Environment variables (a Netlify Personal
+    // Access Token, scoped to Functions).
+    siteID: process.env.SITE_ID,
+    token: process.env.BLOBS_TOKEN,
+  });
 
   if (event.httpMethod === 'GET') {
     try {
