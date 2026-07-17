@@ -1,7 +1,8 @@
 
 import { mindMapData as initialData } from './data/mindMapData';
-import { AppTab, MindMapNode } from './types';
-import React, { useState, useEffect } from 'react';
+import { applyMindMapOverrides } from './data/mindMapMerge';
+import { AppTab, MindMapNode, MindMapOverrides, MindMapNodeEdit, MindMapAddedNode } from './types';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Map, BookOpen, Download, CheckCircle, Shield, Key, FileText, X, ChevronLeft, GraduationCap, Lock, ShieldAlert, Trophy } from 'lucide-react';
 import MindMap from './components/MindMap';
 import QuizDashboard from './components/QuizDashboard';
@@ -10,7 +11,7 @@ import ExpandedDetailsModal from './components/ExpandedDetailsModal';
 import SecurityGate from './components/SecurityGate';
 import AdminPanel from './components/AdminPanel';
 import Leaderboard from './components/Leaderboard';
-import { fetchInviteCodesCloud } from './components/cloudSync';
+import { fetchInviteCodesCloud, fetchMindMapOverridesCloud, saveMindMapOverridesCloud } from './components/cloudSync';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -26,7 +27,8 @@ function App() {
   const [selectedNode, setSelectedNode] = useState<MindMapNode | null>(null);
   const [isConceptModalOpen, setIsConceptModalOpen] = useState(false);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
-  const [mapData] = useState<MindMapNode>(initialData);
+  const [mindMapOverrides, setMindMapOverrides] = useState<MindMapOverrides>({ edits: {}, added: [] });
+  const mapData = useMemo(() => applyMindMapOverrides(initialData, mindMapOverrides), [mindMapOverrides]);
 
   const handleExport = () => {
     alert("Map data exported successfully (JSON format).");
@@ -36,6 +38,48 @@ function App() {
     if (selectedNode) {
       setIsDetailsModalOpen(true);
     }
+  };
+
+  // Save an edit to an existing mind map node's content. Applies
+  // immediately in the UI and persists to the cloud so every visitor sees
+  // the update, not just this admin's browser.
+  const handleSaveNodeEdit = (nodeId: string, updates: MindMapNodeEdit) => {
+    setMindMapOverrides(prev => {
+      const nextOverrides: MindMapOverrides = {
+        ...prev,
+        edits: { ...prev.edits, [nodeId]: { ...prev.edits[nodeId], ...updates } },
+      };
+      saveMindMapOverridesCloud(nextOverrides);
+      return nextOverrides;
+    });
+    setSelectedNode(prev => (prev && prev.id === nodeId ? { ...prev, ...updates } : prev));
+  };
+
+  // Add a brand-new node under an existing (or another added) node.
+  const handleAddChildNode = (parentId: string, newNodeData: Omit<MindMapAddedNode, 'id' | 'parentId'>) => {
+    const newNode: MindMapAddedNode = {
+      id: `custom-node-${Date.now()}`,
+      parentId,
+      ...newNodeData,
+    };
+    setMindMapOverrides(prev => {
+      const nextOverrides: MindMapOverrides = { ...prev, added: [...prev.added, newNode] };
+      saveMindMapOverridesCloud(nextOverrides);
+      return nextOverrides;
+    });
+  };
+
+  // Remove a node that an admin previously added (does not apply to the
+  // original curriculum nodes).
+  const handleDeleteAddedNode = (nodeId: string) => {
+    setMindMapOverrides(prev => {
+      const nextOverrides: MindMapOverrides = { ...prev, added: prev.added.filter(n => n.id !== nodeId) };
+      saveMindMapOverridesCloud(nextOverrides);
+      return nextOverrides;
+    });
+    setIsDetailsModalOpen(false);
+    setIsConceptModalOpen(false);
+    setSelectedNode(null);
   };
 
   const handleUnlock = (adminUnlocked: boolean) => {
@@ -89,6 +133,16 @@ function App() {
       window.removeEventListener('focus', checkCodeStillValid);
     };
   }, [isAuthenticated, isAdmin]);
+
+  // Load admin-made mind map edits/additions from the cloud so every
+  // visitor sees them, not just the admin who made them.
+  useEffect(() => {
+    const loadMindMapOverrides = async () => {
+      const overrides = await fetchMindMapOverridesCloud();
+      setMindMapOverrides(overrides);
+    };
+    loadMindMapOverrides();
+  }, []);
 
   if (!isAuthenticated) {
     return <SecurityGate onUnlock={handleUnlock} />;
@@ -301,6 +355,11 @@ function App() {
         <ExpandedDetailsModal 
           node={selectedNode} 
           onClose={() => setIsDetailsModalOpen(false)} 
+          isAdmin={isAdmin}
+          isAddedNode={mindMapOverrides.added.some(n => n.id === selectedNode.id)}
+          onSaveEdit={handleSaveNodeEdit}
+          onAddChild={handleAddChildNode}
+          onDeleteAddedNode={handleDeleteAddedNode}
         />
       )}
     </div>

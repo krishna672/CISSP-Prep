@@ -496,6 +496,22 @@ const AdminPanel: React.FC = () => {
     setVisibilitySuccess(false);
   };
 
+  const handleSelectAllFiltered = (ids: string[]) => {
+    setQuestionVisibility(prev => ({
+      ...prev,
+      selectedIds: Array.from(new Set([...prev.selectedIds, ...ids])),
+    }));
+    setVisibilitySuccess(false);
+  };
+
+  const handleDeselectAllFiltered = (ids: string[]) => {
+    setQuestionVisibility(prev => ({
+      ...prev,
+      selectedIds: prev.selectedIds.filter(sid => !ids.includes(sid)),
+    }));
+    setVisibilitySuccess(false);
+  };
+
   const handleSaveVisibilitySettings = async () => {
     setVisibilitySaving(true);
     const ok = await saveQuestionVisibilityCloud(questionVisibility);
@@ -1844,8 +1860,29 @@ const AdminPanel: React.FC = () => {
 
                 return (
                   <div className="space-y-4">
-                    <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider px-1">
-                      Showing {visibleQuestions.length} of {filteredQuestions.length} matching questions
+                    <div className="flex items-center justify-between gap-3 flex-wrap px-1">
+                      <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                        Showing {visibleQuestions.length} of {filteredQuestions.length} matching questions
+                      </div>
+                      {questionVisibility.mode === 'selected' && (
+                        <div className="flex items-center gap-3 text-[10px] font-black uppercase tracking-wider">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectAllFiltered(filteredQuestions.map(q => q.id))}
+                            className="text-indigo-600 hover:text-indigo-700 cursor-pointer"
+                          >
+                            Select All {filteredQuestions.length} Matching
+                          </button>
+                          <span className="text-slate-300">&middot;</span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeselectAllFiltered(filteredQuestions.map(q => q.id))}
+                            className="text-slate-500 hover:text-slate-700 cursor-pointer"
+                          >
+                            Deselect Matching
+                          </button>
+                        </div>
+                      )}
                     </div>
                     
                     <div className="divide-y divide-slate-100 border border-slate-200 rounded-2xl bg-white overflow-hidden shadow-sm">

@@ -1,4 +1,4 @@
-import { InviteCode, LeaderboardEntry, Question, QuestionVisibilitySettings } from '../types';
+import { InviteCode, LeaderboardEntry, Question, QuestionVisibilitySettings, MindMapOverrides } from '../types';
 
 const BASE_URL = '/api';
 
@@ -444,6 +444,68 @@ export async function saveQuestionVisibilityCloud(settings: QuestionVisibilitySe
     return response.ok;
   } catch (error) {
     console.warn('Cloud Sync: Failed to save question visibility settings to cloud.', error);
+    return false;
+  }
+}
+
+// ----------------------------------------------------
+// Cloud Sync: MIND MAP OVERRIDES
+// ----------------------------------------------------
+//
+// Admin edits to existing mind map node content, and any brand-new nodes
+// an admin adds, are stored here and merged onto the base static tree at
+// render time (see data/mindMapMerge.ts) -- for every visitor, not just
+// the admin's own browser.
+
+const DEFAULT_MINDMAP_OVERRIDES: MindMapOverrides = { edits: {}, added: [] };
+
+export async function fetchMindMapOverridesCloud(): Promise<MindMapOverrides> {
+  const localKey = 'cissp_mindmap_overrides';
+
+  try {
+    const response = await fetch(`${BASE_URL}/mindmap_overrides`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (response.ok) {
+      const text = await response.text();
+      if (text && text.trim()) {
+        const overrides: MindMapOverrides = JSON.parse(text);
+        if (overrides && typeof overrides.edits === 'object' && Array.isArray(overrides.added)) {
+          localStorage.setItem(localKey, JSON.stringify(overrides));
+          return overrides;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to fetch mind map overrides. Falling back to offline state.', error);
+  }
+
+  const localData = localStorage.getItem(localKey);
+  if (localData) {
+    try {
+      return JSON.parse(localData);
+    } catch (e) {
+      return DEFAULT_MINDMAP_OVERRIDES;
+    }
+  }
+  return DEFAULT_MINDMAP_OVERRIDES;
+}
+
+export async function saveMindMapOverridesCloud(overrides: MindMapOverrides): Promise<boolean> {
+  const localKey = 'cissp_mindmap_overrides';
+  localStorage.setItem(localKey, JSON.stringify(overrides));
+
+  try {
+    const response = await fetch(`${BASE_URL}/mindmap_overrides`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(overrides)
+    });
+    return response.ok;
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to save mind map overrides to cloud.', error);
     return false;
   }
 }

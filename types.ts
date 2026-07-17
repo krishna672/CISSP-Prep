@@ -85,3 +85,36 @@ export interface QuestionVisibilitySettings {
   mode: 'default' | 'custom' | 'selected';
   selectedIds: string[];
 }
+
+// Admin edits to an EXISTING mind map node's content (only the fields
+// present are overridden; anything omitted keeps the original value).
+export interface MindMapNodeEdit {
+  label?: string;
+  definition?: string;
+  example?: string;
+  enforcement?: string;
+  keyAspect?: string;
+  notes?: string;
+  citation?: string;
+}
+
+// A brand-new node added by an admin, attached under an existing (or
+// another added) node via parentId.
+export interface MindMapAddedNode {
+  id: string;
+  parentId: string;
+  label: string;
+  type: 'domain' | 'subdomain' | 'concept' | 'detail';
+  color?: string;
+  definition?: string;
+  example?: string;
+  enforcement?: string;
+  keyAspect?: string;
+  notes?: string;
+  citation?: string;
+}
+
+export interface MindMapOverrides {
+  edits: Record<string, MindMapNodeEdit>;
+  added: MindMapAddedNode[];
+}

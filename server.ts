@@ -247,6 +247,32 @@ app.put('/api/question_visibility', (req, res) => {
   }
 });
 
+// 7. Mind map overrides (admin edits to existing nodes + admin-added nodes)
+const DEFAULT_MINDMAP_OVERRIDES = JSON.stringify({ edits: {}, added: [] });
+
+app.get('/api/mindmap_overrides', (req, res) => {
+  try {
+    const data = readSecureFile('secure_mindmap_overrides.enc', DEFAULT_MINDMAP_OVERRIDES);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(data);
+  } catch (err) {
+    console.error('API Error mindmap_overrides GET:', err);
+    res.status(500).json({ error: 'Failed to retrieve mind map overrides' });
+  }
+});
+
+app.put('/api/mindmap_overrides', (req, res) => {
+  try {
+    const bodyStr = JSON.stringify(req.body);
+    writeSecureFile('secure_mindmap_overrides.enc', bodyStr);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(bodyStr);
+  } catch (err) {
+    console.error('API Error mindmap_overrides PUT:', err);
+    res.status(500).json({ error: 'Failed to save mind map overrides' });
+  }
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
