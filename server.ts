@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
+import { questions as staticQuestions } from './data/questionData';
 
 const app = express();
 const PORT = 3000;
@@ -11,13 +12,21 @@ const PORT = 3000;
 app.use(express.json());
 app.use(express.text({ type: 'text/plain' }));
 
-// Encryption configuration
-const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
-const IV_LENGTH = 16;
+// Encryption configuration -- reads ENCRYPTION_KEY from the environment
+// (e.g. a local .env file, not committed) instead of a hardcoded key,
+// matching netlify/functions/_shared/encryption.ts. Falls back to the old
+// hardcoded key for decrypting data written before this change.
+const LEGACY_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8');
+
+function deriveKey(raw: string): Buffer {
+  return crypto.createHash('sha256').update(raw, 'utf8').digest();
+}
+
+const CURRENT_KEY = process.env.ENCRYPTION_KEY ? deriveKey(process.env.ENCRYPTION_KEY) : LEGACY_KEY;
 
 function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-cbc', CURRENT_KEY, iv);
   let encrypted = cipher.update(text, 'utf8', 'hex');
   encrypted += cipher.final('hex');
   return iv.toString('hex') + ':' + encrypted;
@@ -30,10 +39,20 @@ function decrypt(text: string): string {
   }
   const iv = Buffer.from(textParts.shift() || '', 'hex');
   const encryptedText = Buffer.from(textParts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let decrypted = decipher.update(encryptedText).toString('utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-cbc', CURRENT_KEY, iv);
+    let decrypted = decipher.update(encryptedText).toString('utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (err) {
+    if (process.env.ENCRYPTION_KEY) {
+      const decipher = crypto.createDecipheriv('aes-256-cbc', LEGACY_KEY, iv);
+      let decrypted = decipher.update(encryptedText).toString('utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    }
+    throw err;
+  }
 }
 
 function getFilePath(filename: string): string {
@@ -110,7 +129,44 @@ function getCandidateSession(token: string | undefined): { code: string; candida
     candidateSessions.delete(token);
     return null;
   }
+  // Cross-check against the live registry so a revoked code immediately
+  // invalidates any session already issued from it, rather than only
+  // being enforced at the next login.
+  try {
+    const codes = JSON.parse(readSecureFile('secure_invite_codes.enc', '[]'));
+    const stillExists = Array.isArray(codes) && codes.some((c: any) => c.code?.toUpperCase() === entry.code.toUpperCase());
+    if (!stillExists) {
+      candidateSessions.delete(token);
+      return null;
+    }
+  } catch {
+    candidateSessions.delete(token);
+    return null;
+  }
   return { code: entry.code, candidateName: entry.candidateName };
+}
+
+// ----------------------------------------------------
+// Rate limiting (in-memory sliding window -- local dev is a single process)
+// ----------------------------------------------------
+const rateLimitBuckets = new Map<string, number[]>();
+
+function checkRateLimit(req: express.Request, bucket: string, maxAttempts: number, windowMs: number): boolean {
+  const ip = req.ip || 'unknown';
+  const key = `${bucket}_${ip}`;
+  const now = Date.now();
+  let attempts = (rateLimitBuckets.get(key) || []).filter(t => now - t < windowMs);
+  if (attempts.length >= maxAttempts) {
+    rateLimitBuckets.set(key, attempts);
+    return false;
+  }
+  attempts.push(now);
+  rateLimitBuckets.set(key, attempts);
+  return true;
+}
+
+function rateLimited(res: express.Response) {
+  res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
 }
 
 function extractAdminToken(req: express.Request): string | undefined {
@@ -189,6 +245,10 @@ app.post('/api/leaderboard', (req, res) => {
     res.status(401).json({ error: 'Unauthorized: valid session required.' });
     return;
   }
+  if (!checkRateLimit(req, 'leaderboard_submit', 15, 15 * 60 * 1000)) {
+    rateLimited(res);
+    return;
+  }
   try {
     const newEntry = req.body;
     if (!newEntry || typeof newEntry.id !== 'string' || newEntry.id.startsWith('mock-')) {
@@ -202,6 +262,29 @@ app.post('/api/leaderboard', (req, res) => {
       newEntry.code = ctx.candidateCode;
       newEntry.name = ctx.candidateName;
     }
+
+    if (newEntry.type !== 'CAT Exam' && newEntry.type !== 'Practice Quiz') {
+      res.status(400).json({ error: 'Invalid entry type' });
+      return;
+    }
+    const score = Number(newEntry.score);
+    const questionsCount = Number(newEntry.questionsCount);
+    const scoreMin = newEntry.type === 'CAT Exam' ? 100 : 0;
+    const scoreMax = newEntry.type === 'CAT Exam' ? 1000 : 100;
+    const passingScore = newEntry.type === 'CAT Exam' ? 700 : 70;
+    if (!Number.isFinite(score) || score < scoreMin || score > scoreMax) {
+      res.status(400).json({ error: 'Score out of range for entry type' });
+      return;
+    }
+    if (!Number.isInteger(questionsCount) || questionsCount < 1 || questionsCount > 500) {
+      res.status(400).json({ error: 'Invalid question count' });
+      return;
+    }
+    newEntry.score = score;
+    newEntry.questionsCount = questionsCount;
+    newEntry.passed = score >= passingScore;
+    newEntry.timestamp = new Date().toISOString();
+
     const existingRaw = readSecureFile('secure_leaderboard.enc', '[]');
     const existing = JSON.parse(existingRaw);
     const entries = Array.isArray(existing) ? existing : [];
@@ -224,6 +307,103 @@ app.put('/api/leaderboard', requireAdmin, (req, res) => {
   } catch (err) {
     console.error('API Error leaderboard PUT:', err);
     res.status(500).json({ error: 'Failed to save leaderboard' });
+  }
+});
+
+// Grades a quiz/exam attempt server-side from raw answers instead of
+// trusting a client-computed score. Mirrors netlify/functions/grade_quiz.ts.
+const DIFFICULTY_WEIGHTS: Record<string, number> = { Basic: 25, Moderate: 45, Hard: 75 };
+const DEFAULT_STEP = 40;
+const CAT_PASSING_SCORE = 700;
+const QUIZ_PASSING_SCORE = 70;
+
+function findQuestionById(id: string): { correctOption: string; difficulty: string } | null {
+  const staticMatch = staticQuestions.find((q: any) => q.id === id);
+  if (staticMatch) return { correctOption: staticMatch.correctOption, difficulty: staticMatch.difficulty };
+  try {
+    const custom = JSON.parse(readSecureFile('secure_custom_questions.enc', '[]'));
+    const customMatch = Array.isArray(custom) ? custom.find((q: any) => q.id === id) : null;
+    return customMatch ? { correctOption: customMatch.correctOption, difficulty: customMatch.difficulty } : null;
+  } catch {
+    return null;
+  }
+}
+
+app.post('/api/grade_quiz', (req, res) => {
+  const ctx = getAuthContext(req);
+  if (!ctx) {
+    res.status(401).json({ error: 'Unauthorized: valid session required.' });
+    return;
+  }
+  if (!checkRateLimit(req, 'grade_quiz', 15, 15 * 60 * 1000)) {
+    rateLimited(res);
+    return;
+  }
+  try {
+    const type = req.body?.type === 'CAT Exam' ? 'CAT Exam' : req.body?.type === 'Practice Quiz' ? 'Practice Quiz' : null;
+    const answers = Array.isArray(req.body?.answers) ? req.body.answers : [];
+    if (!type || answers.length === 0 || answers.length > 500) {
+      res.status(400).json({ error: 'Invalid submission' });
+      return;
+    }
+
+    const resolved: { isCorrect: boolean; difficulty: string }[] = [];
+    for (const a of answers) {
+      const questionId = typeof a?.questionId === 'string' ? a.questionId : null;
+      const selectedOption = typeof a?.selectedOption === 'string' ? a.selectedOption : null;
+      if (!questionId || !selectedOption) {
+        res.status(400).json({ error: 'Malformed answer entry' });
+        return;
+      }
+      const known = findQuestionById(questionId);
+      if (known) {
+        resolved.push({ isCorrect: selectedOption === known.correctOption, difficulty: known.difficulty || 'Moderate' });
+      } else {
+        const claimedCorrect = typeof a?.correctOption === 'string' ? a.correctOption : null;
+        resolved.push({
+          isCorrect: claimedCorrect !== null && selectedOption === claimedCorrect,
+          difficulty: typeof a?.difficulty === 'string' ? a.difficulty : 'Moderate',
+        });
+      }
+    }
+
+    let score: number;
+    let passed: boolean;
+    if (type === 'Practice Quiz') {
+      const correctCount = resolved.filter(r => r.isCorrect).length;
+      score = Math.round((correctCount / resolved.length) * 100);
+      passed = score >= QUIZ_PASSING_SCORE;
+    } else {
+      let ability = 500;
+      for (const r of resolved) {
+        const step = DIFFICULTY_WEIGHTS[r.difficulty] || DEFAULT_STEP;
+        const change = r.isCorrect ? step : -step * 0.6;
+        ability = Math.max(100, Math.min(1000, ability + change));
+      }
+      score = Math.round(ability);
+      passed = score >= CAT_PASSING_SCORE;
+    }
+
+    const newEntry = {
+      id: `${type === 'CAT Exam' ? 'cat' : 'quiz'}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      code: ctx.isAdmin ? 'ADMIN' : ctx.candidateCode,
+      name: ctx.isAdmin ? 'System Administrator' : ctx.candidateName,
+      score,
+      type,
+      questionsCount: resolved.length,
+      timestamp: new Date().toISOString(),
+      passed,
+    };
+
+    const existing = JSON.parse(readSecureFile('secure_leaderboard.enc', '[]'));
+    const entries = Array.isArray(existing) ? existing : [];
+    const updated = [newEntry, ...entries.filter((e: any) => e.id !== newEntry.id)];
+    writeSecureFile('secure_leaderboard.enc', JSON.stringify(updated));
+
+    res.json({ success: true, score, passed, entry: newEntry });
+  } catch (err) {
+    console.error('API Error grade_quiz POST:', err);
+    res.status(500).json({ error: 'Failed to grade submission' });
   }
 });
 
@@ -251,6 +431,10 @@ app.put('/api/invite_codes', requireAdmin, (req, res) => {
 });
 
 app.post('/api/verify_invite_code', (req, res) => {
+  if (!checkRateLimit(req, 'verify_invite_code', 60, 15 * 60 * 1000)) {
+    rateLimited(res);
+    return;
+  }
   try {
     const inputCode = typeof req.body?.code === 'string' ? req.body.code.trim().toUpperCase() : '';
     if (!inputCode) {
@@ -270,10 +454,19 @@ app.post('/api/verify_invite_code', (req, res) => {
   }
 });
 
+// The actual candidate login transaction. Same-device reuse is verified
+// via a real cryptographic receipt (issued on first redemption, stored
+// encrypted client-side, required verbatim on any later login) instead of
+// a client-asserted boolean -- which could previously be forged to mint
+// unlimited sessions from a single leaked code.
 app.post('/api/redeem_invite_code', (req, res) => {
+  if (!checkRateLimit(req, 'redeem_invite_code', 20, 15 * 60 * 1000)) {
+    rateLimited(res);
+    return;
+  }
   try {
     const inputCode = typeof req.body?.code === 'string' ? req.body.code.trim().toUpperCase() : '';
-    const alreadyRedeemedOnDevice = Boolean(req.body?.alreadyRedeemedOnDevice);
+    const suppliedReceipt = typeof req.body?.receipt === 'string' && req.body.receipt.length > 0 ? req.body.receipt : null;
 
     if (!inputCode) {
       res.json({ success: false, reason: 'invalid' });
@@ -291,20 +484,26 @@ app.post('/api/redeem_invite_code', (req, res) => {
     }
 
     const usedCount = codes[index].usedCount || 0;
-    if (usedCount >= 1 && !alreadyRedeemedOnDevice) {
+    const storedReceipt: string | undefined = codes[index].redemptionReceipt;
+    const isVerifiedReturnVisit = Boolean(storedReceipt) && suppliedReceipt === storedReceipt;
+
+    if (usedCount >= 1 && !isVerifiedReturnVisit) {
       res.json({ success: false, reason: 'already_used' });
       return;
     }
 
     const candidateName = codes[index].candidateName || `Candidate (${inputCode})`;
+    let receiptToReturn = storedReceipt || null;
 
-    if (!alreadyRedeemedOnDevice) {
+    if (!isVerifiedReturnVisit) {
+      receiptToReturn = crypto.randomBytes(32).toString('hex');
       codes[index].usedCount = usedCount + 1;
+      codes[index].redemptionReceipt = receiptToReturn;
       writeSecureFile('secure_invite_codes.enc', JSON.stringify(codes));
     }
 
     const token = createCandidateSession(inputCode, candidateName);
-    res.json({ success: true, candidateName, token });
+    res.json({ success: true, candidateName, token, receipt: receiptToReturn });
   } catch (err) {
     console.error('API Error redeem_invite_code POST:', err);
     res.json({ success: false, reason: 'error' });
@@ -340,11 +539,22 @@ app.put('/api/admin_passcode', requireAdmin, (req, res) => {
   }
 });
 
+function timingSafeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 app.post('/api/verify_admin', (req, res) => {
+  if (!checkRateLimit(req, 'verify_admin', 10, 15 * 60 * 1000)) {
+    rateLimited(res);
+    return;
+  }
   try {
     const candidate = typeof req.body?.passcode === 'string' ? req.body.passcode.trim() : '';
     const actualPasscode = readSecureFile('secure_admin_passcode.enc', DEFAULT_ADMIN_PASSCODE);
-    const isAdmin = candidate.length > 0 && candidate === actualPasscode;
+    const isAdmin = candidate.length > 0 && timingSafeEqual(candidate, actualPasscode);
     const token = isAdmin ? createAdminSession() : null;
     res.setHeader('Content-Type', 'application/json');
     res.json({ isAdmin, token });

@@ -21,15 +21,15 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
   const [success, setSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
 
-  // Local storage cache keys
-  const [redeemedCodesOnDevice, setRedeemedCodesOnDevice] = useState<string[]>([]);
-
   // Note: the admin passcode is intentionally never fetched or cached here.
   // It's verified server-side (see handleSubmit) so it never touches the
   // browser. Similarly, the full invite code registry is never fetched by
   // candidates at all -- individual codes are checked server-side via
-  // verifyInviteCodeCloud, which only ever reveals info about the one code
-  // typed in.
+  // loginCandidateCloud, which only ever reveals info about the one code
+  // typed in. Same-device reuse is handled via a server-issued
+  // cryptographic receipt (see cloudSync.ts) rather than a client-asserted
+  // flag, so it can't be spoofed to get unlimited redemptions from a
+  // single code.
   useEffect(() => {
     // If an invite code was shared via URL, pre-fill the input field only.
     // It still has to match a code that already exists in the admin's
@@ -47,16 +47,6 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
         window.history.replaceState({}, document.title, cleanUrl);
       } catch (e) {
         console.error("Failed to clean query parameters from URL:", e);
-      }
-    }
-
-    // Track codes already successfully redeemed on this specific device
-    const storedRedeemed = localStorage.getItem('cissp_my_redeemed_codes');
-    if (storedRedeemed) {
-      try {
-        setRedeemedCodesOnDevice(JSON.parse(storedRedeemed));
-      } catch (e) {
-        setRedeemedCodesOnDevice([]);
       }
     }
   }, []);
@@ -88,13 +78,12 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       return;
     }
 
-    const isAlreadyRedeemedOnDevice = redeemedCodesOnDevice.includes(inputUpper);
-
     // One server-side transaction: validates the code, enforces the
-    // one-use rule (except on this same device), conditionally redeems
+    // one-use rule (verified via a cryptographic receipt for legitimate
+    // same-device re-logins, not a client claim), conditionally redeems
     // it, and issues a real session token on success. Never fetches or
     // exposes the full registry of everyone else's codes/names.
-    const result = await loginCandidateCloud(inputUpper, isAlreadyRedeemedOnDevice);
+    const result = await loginCandidateCloud(inputUpper);
 
     // Codes are never auto-created or auto-registered from user input --
     // if it isn't already in the admin's registry, it's rejected outright.
@@ -119,12 +108,6 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     // quiz/exam screens can label leaderboard submissions without needing
     // to read everyone else's invite codes.
     await saveMyCandidateInfo(inputUpper, candidateName);
-
-    if (!isAlreadyRedeemedOnDevice) {
-      const newRedeemedList = [...redeemedCodesOnDevice, inputUpper];
-      localStorage.setItem('cissp_my_redeemed_codes', JSON.stringify(newRedeemedList));
-      setRedeemedCodesOnDevice(newRedeemedList);
-    }
 
     // Save session info
     sessionStorage.setItem('cissp_vault_auth', 'true');

@@ -1,32 +1,13 @@
 import { getStore } from '@netlify/blobs';
-import crypto from 'crypto';
+import { encrypt, decrypt } from './_shared/encryption';
 import { requireAdmin } from './_shared/adminAuth';
 import { requireAuthenticated, getAuthContext } from './_shared/authContext';
+import { checkRateLimit, rateLimitedResponse } from './_shared/rateLimit';
 
 // Same encryption approach as the original server.ts, so data at rest
 // stays encrypted even though it now lives in Netlify Blobs instead of
 // a local file.
-const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
-const IV_LENGTH = 16;
 const BLOB_KEY = 'leaderboard';
-
-function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  return iv.toString('hex') + ':' + encrypted;
-}
-
-function decrypt(text: string): string {
-  const parts = text.split(':');
-  const iv = Buffer.from(parts.shift() || '', 'hex');
-  const encryptedText = Buffer.from(parts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let decrypted = decipher.update(encryptedText).toString('utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
-}
 
 export const handler = async (event: any) => {
   const store = getStore({
@@ -68,6 +49,12 @@ export const handler = async (event: any) => {
     if (!ctx) {
       return { statusCode: 401, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Unauthorized: valid session required.' }) };
     }
+
+    // 15 submissions per 15 minutes per IP -- generous for legitimate use
+    // (a handful of quiz/exam attempts) while blocking bulk spam.
+    const allowed = await checkRateLimit(event, 'leaderboard_submit', 15, 15 * 60 * 1000);
+    if (!allowed) return rateLimitedResponse();
+
     try {
       const newEntry = JSON.parse(event.body || '{}');
       if (!newEntry || typeof newEntry.id !== 'string' || newEntry.id.startsWith('mock-')) {
@@ -82,6 +69,34 @@ export const handler = async (event: any) => {
         newEntry.code = ctx.candidateCode;
         newEntry.name = ctx.candidateName;
       }
+
+      // Sanity-check the result content. Grading itself still happens in
+      // the browser (there's no server-side answer key check here), so
+      // this can't stop someone from fabricating a result entirely -- but
+      // it does reject obviously-invalid payloads and makes "passed"
+      // server-computed from score/type rather than trusted verbatim, so
+      // it can't be set independently of the score.
+      if (newEntry.type !== 'CAT Exam' && newEntry.type !== 'Practice Quiz') {
+        return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid entry type' }) };
+      }
+
+      const score = Number(newEntry.score);
+      const questionsCount = Number(newEntry.questionsCount);
+      const scoreMin = newEntry.type === 'CAT Exam' ? 100 : 0;
+      const scoreMax = newEntry.type === 'CAT Exam' ? 1000 : 100;
+      const passingScore = newEntry.type === 'CAT Exam' ? 700 : 70;
+
+      if (!Number.isFinite(score) || score < scoreMin || score > scoreMax) {
+        return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Score out of range for entry type' }) };
+      }
+      if (!Number.isInteger(questionsCount) || questionsCount < 1 || questionsCount > 500) {
+        return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid question count' }) };
+      }
+
+      newEntry.score = score;
+      newEntry.questionsCount = questionsCount;
+      newEntry.passed = score >= passingScore; // recomputed, never trusted from the client
+      newEntry.timestamp = new Date().toISOString(); // server clock, not client-supplied
 
       const raw = await store.get(BLOB_KEY);
       const existing = raw ? JSON.parse(decrypt(raw)) : [];

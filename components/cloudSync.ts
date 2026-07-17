@@ -226,6 +226,43 @@ export async function submitLeaderboardEntryCloud(newEntry: LeaderboardEntry): P
   return await fetchLeaderboardCloud();
 }
 
+// Submits raw answers for the server to grade and record on the
+// leaderboard itself, rather than trusting a client-computed score. The
+// server independently looks up each question's correct answer from the
+// same static/custom question bank it already serves, so the score/passed
+// values written to the leaderboard are authoritative -- not just
+// whatever the client claims. (One disclosed limitation: questions
+// generated on the fly by the Gemini "AI Studio" engine aren't persisted
+// anywhere the server can see them, so those specific items fall back to
+// trusting the client's own report of the correct answer for that item --
+// see grade_quiz.ts for details.)
+export interface GradeQuizAnswer {
+  questionId: string;
+  selectedOption: string;
+  correctOption?: string; // only used as a fallback for AI-generated questions the server has never seen
+  difficulty?: string;    // same fallback purpose
+}
+
+export async function submitGradedQuizCloud(
+  type: 'CAT Exam' | 'Practice Quiz',
+  answers: GradeQuizAnswer[]
+): Promise<{ success: boolean; score?: number; passed?: boolean }> {
+  try {
+    const response = await fetch(`${BASE_URL}/grade_quiz`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ type, answers })
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return { success: Boolean(data.success), score: data.score, passed: data.passed };
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to submit quiz for grading.', error);
+  }
+  return { success: false };
+}
+
 // Admin-only.
 export async function clearLeaderboardCloud(): Promise<boolean> {
   await secureSet('cissp_leaderboard', JSON.stringify([]));
@@ -312,24 +349,61 @@ export async function verifyInviteCodeCloud(code: string): Promise<{ valid: bool
 }
 
 // The actual candidate login transaction: validates the code, enforces
-// one-use-per-code (with a per-device exception), conditionally redeems
-// it, and -- on success -- captures the real session token the server
-// issues. This token is what every candidate-accessible route actually
-// checks from then on, not any client-side flag.
+// one-use-per-code, and -- on success -- captures the real session token
+// the server issues, plus a redemption receipt for legitimate re-logins on
+// this same device. This token/receipt are what every candidate-accessible
+// route actually checks from then on, not any client-side flag.
+//
+// The receipt matters: same-device reuse used to be a client-asserted
+// boolean the server just trusted, which meant anyone could claim
+// "already redeemed on this device" on every request and get unlimited
+// sessions from one leaked code. Now the server only allows a no-cost
+// re-login if the client presents the exact random receipt it was handed
+// on first redemption -- something that can't be guessed or asserted.
+const RECEIPTS_KEY = 'cissp_redemption_receipts';
+
+async function getStoredReceipt(code: string): Promise<string | null> {
+  const data = await secureGet(RECEIPTS_KEY);
+  if (!data) return null;
+  try {
+    const receipts = JSON.parse(data);
+    return receipts[code.toUpperCase()] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function storeReceipt(code: string, receipt: string): Promise<void> {
+  const data = await secureGet(RECEIPTS_KEY);
+  let receipts: Record<string, string> = {};
+  if (data) {
+    try {
+      receipts = JSON.parse(data);
+    } catch (e) {
+      receipts = {};
+    }
+  }
+  receipts[code.toUpperCase()] = receipt;
+  await secureSet(RECEIPTS_KEY, JSON.stringify(receipts));
+}
+
 export async function loginCandidateCloud(
-  code: string,
-  alreadyRedeemedOnDevice: boolean
+  code: string
 ): Promise<{ success: boolean; reason?: string; candidateName?: string }> {
   try {
+    const existingReceipt = await getStoredReceipt(code);
     const response = await fetch(`${BASE_URL}/redeem_invite_code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, alreadyRedeemedOnDevice })
+      body: JSON.stringify({ code, receipt: existingReceipt })
     });
     if (response.ok) {
       const data = await response.json();
       if (data.success && data.token) {
         setCandidateSessionToken(data.token);
+      }
+      if (data.success && data.receipt) {
+        await storeReceipt(code, data.receipt);
       }
       return { success: Boolean(data.success), reason: data.reason, candidateName: data.candidateName };
     }

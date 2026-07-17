@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Question, LeaderboardEntry } from '../types';
+import { Question } from '../types';
 import { Shield, Clock, BrainCircuit, Loader2, Sparkles, AlertCircle, Trophy, History, RefreshCcw, Activity, GraduationCap, BarChart3, Settings2, Sliders, Download, FileText, CheckCircle2, XCircle, ArrowRight, Gauge, Check, Info } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { questions as staticQuestions } from '../data/questionData';
-import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud, getCachedCustomQuestions, getCachedDeletedQuestionIds, getCachedQuestionVisibility, getMyCandidateInfo } from './cloudSync';
+import { submitGradedQuizCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud, getCachedCustomQuestions, getCachedDeletedQuestionIds, getCachedQuestionVisibility } from './cloudSync';
 
 
 // Official CISSP Weights (2024 Standard)
@@ -197,37 +197,25 @@ const ExamSimulator: React.FC = () => {
   // Leaderboard automatic submission
   useEffect(() => {
     if (state.status === 'FINISHED' && state.questionHistory.length > 0) {
-      const activeCode = sessionStorage.getItem('cissp_vault_code') || 'UNKNOWN';
-
       // Check if we already logged this specific finished session to avoid duplicates
       const sessionKey = `cissp_exam_session_${state.questionHistory.length}_${state.abilityEstimate}`;
       const isAlreadyLogged = sessionStorage.getItem(sessionKey) === 'true';
       if (!isAlreadyLogged) {
         sessionStorage.setItem(sessionKey, 'true');
 
-        (async () => {
-          let candidateName = '';
-          const myInfo = await getMyCandidateInfo();
-          if (myInfo && myInfo.code.toUpperCase() === activeCode.toUpperCase() && myInfo.candidateName) {
-            candidateName = myInfo.candidateName;
-          }
-          if (!candidateName) {
-            candidateName = activeCode === 'ADMIN' ? 'System Administrator' : `Candidate (${activeCode})`;
-          }
+        // Submit the ordered answer history for the server to independently
+        // replay the same adaptive ability-estimate formula and record the
+        // result on the leaderboard itself -- the client-computed
+        // abilityEstimate above is only used for this device's own results
+        // screen, not trusted as the official score.
+        const answers = state.questionHistory.map(h => ({
+          questionId: h.question.id,
+          selectedOption: h.answer,
+          correctOption: h.question.correctOption, // fallback only, used if the server doesn't recognize this question ID (AI-generated)
+          difficulty: h.question.difficulty,
+        }));
 
-          const newEntry: LeaderboardEntry = {
-            id: `cat-${Date.now()}`,
-            code: activeCode,
-            name: candidateName,
-            score: Math.round(state.abilityEstimate),
-            type: 'CAT Exam',
-            questionsCount: state.questionHistory.length,
-            timestamp: new Date().toISOString(),
-            passed: state.abilityEstimate >= PASSING_SCORE
-          };
-
-          submitLeaderboardEntryCloud(newEntry).catch(e => console.error("Leaderboard submit failed", e));
-        })();
+        submitGradedQuizCloud('CAT Exam', answers).catch(e => console.error("Leaderboard submit failed", e));
       }
     }
   }, [state.status, state.abilityEstimate, state.questionHistory]);

@@ -1,44 +1,35 @@
 import { getStore } from '@netlify/blobs';
 import crypto from 'crypto';
+import { encrypt, decrypt } from './_shared/encryption';
 import { createCandidateSession } from './_shared/candidateAuth';
+import { checkRateLimit, rateLimitedResponse } from './_shared/rateLimit';
 
-const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
-const IV_LENGTH = 16;
 const BLOB_KEY = 'invite_codes';
 
-function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  return iv.toString('hex') + ':' + encrypted;
-}
-
-function decrypt(text: string): string {
-  const parts = text.split(':');
-  const iv = Buffer.from(parts.shift() || '', 'hex');
-  const encryptedText = Buffer.from(parts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let decrypted = decipher.update(encryptedText).toString('utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
-}
-
-// The actual candidate login transaction, done entirely server-side:
-// look up the code, enforce the one-use rule (except when this exact
-// device already redeemed it), conditionally increment usedCount, and --
-// on success -- issue a real session token. Everything downstream
-// (content endpoints, leaderboard submission) checks this token instead
-// of trusting a client-side sessionStorage flag.
+// The actual candidate login transaction, done entirely server-side.
+//
+// IMPORTANT: same-device reuse is verified with a real cryptographic
+// receipt, not a client-asserted boolean. A previous version trusted a
+// client-supplied `alreadyRedeemedOnDevice` flag, which meant anyone could
+// just claim "yes, already redeemed on this device" on every request and
+// get unlimited sessions from a single leaked code. Now: on first
+// redemption, the server generates a random receipt and hands it back to
+// the client (which stores it encrypted). On any later login attempt, the
+// client must present that exact receipt to be treated as a legitimate
+// return visit -- a receipt that was never issued to it can't be forged.
 export const handler = async (event: any) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
+  // 20 attempts per 15 minutes per IP.
+  const allowed = await checkRateLimit(event, 'redeem_invite_code', 20, 15 * 60 * 1000);
+  if (!allowed) return rateLimitedResponse();
+
   try {
     const body = JSON.parse(event.body || '{}');
     const inputCode = typeof body.code === 'string' ? body.code.trim().toUpperCase() : '';
-    const alreadyRedeemedOnDevice = Boolean(body.alreadyRedeemedOnDevice);
+    const suppliedReceipt = typeof body.receipt === 'string' && body.receipt.length > 0 ? body.receipt : null;
 
     if (!inputCode) {
       return {
@@ -74,7 +65,15 @@ export const handler = async (event: any) => {
     }
 
     const usedCount = codes[index].usedCount || 0;
-    if (usedCount >= 1 && !alreadyRedeemedOnDevice) {
+    const storedReceipt: string | undefined = codes[index].redemptionReceipt;
+
+    // A real return visit from the original device presents the exact
+    // receipt it was issued. Anything else (missing, wrong, or a bare
+    // claim with no receipt at all) is treated as a fresh redemption
+    // attempt and subject to the one-use rule.
+    const isVerifiedReturnVisit = Boolean(storedReceipt) && suppliedReceipt === storedReceipt;
+
+    if (usedCount >= 1 && !isVerifiedReturnVisit) {
       return {
         statusCode: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -83,9 +82,13 @@ export const handler = async (event: any) => {
     }
 
     const candidateName = codes[index].candidateName || `Candidate (${inputCode})`;
+    let receiptToReturn = storedReceipt || null;
 
-    if (!alreadyRedeemedOnDevice) {
+    if (!isVerifiedReturnVisit) {
+      // First-ever redemption of this code: mint a new receipt and record it.
+      receiptToReturn = crypto.randomBytes(32).toString('hex');
       codes[index].usedCount = usedCount + 1;
+      codes[index].redemptionReceipt = receiptToReturn;
       await store.set(BLOB_KEY, encrypt(JSON.stringify(codes)));
     }
 
@@ -94,7 +97,7 @@ export const handler = async (event: any) => {
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ success: true, candidateName, token }),
+      body: JSON.stringify({ success: true, candidateName, token, receipt: receiptToReturn }),
     };
   } catch (err) {
     console.error('redeem_invite_code (login) error:', err);

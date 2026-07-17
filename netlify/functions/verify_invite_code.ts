@@ -1,19 +1,9 @@
 import { getStore } from '@netlify/blobs';
 import crypto from 'crypto';
+import { decrypt } from './_shared/encryption';
+import { checkRateLimit, rateLimitedResponse } from './_shared/rateLimit';
 
-const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
-const IV_LENGTH = 16;
 const BLOB_KEY = 'invite_codes';
-
-function decrypt(text: string): string {
-  const parts = text.split(':');
-  const iv = Buffer.from(parts.shift() || '', 'hex');
-  const encryptedText = Buffer.from(parts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let decrypted = decipher.update(encryptedText).toString('utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
-}
 
 // Checks a single invite code against the registry WITHOUT ever returning
 // the full list -- so an anonymous visitor typing a code can't see every
@@ -24,6 +14,12 @@ export const handler = async (event: any) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
+
+  // 60 checks per 15 minutes per IP -- generous enough for the app's own
+  // periodic revocation poll (every 30s) plus normal login attempts, but
+  // throttles bulk code enumeration.
+  const allowed = await checkRateLimit(event, 'verify_invite_code', 60, 15 * 60 * 1000);
+  if (!allowed) return rateLimitedResponse();
 
   try {
     const body = JSON.parse(event.body || '{}');

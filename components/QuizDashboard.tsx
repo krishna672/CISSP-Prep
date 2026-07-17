@@ -1,11 +1,11 @@
 
 import React, { useState, useEffect } from 'react';
-import { Question, QuizState, LeaderboardEntry } from '../types';
+import { Question, QuizState } from '../types';
 import { questions as staticQuestions } from '../data/questionData';
 import { mindMapData } from '../data/mindMapData';
 import { Play, Clock, CheckCircle, XCircle, Award, Target, Settings2, ArrowRight, RotateCcw, Check, Loader2, Sparkles, ChevronDown, ListChecks, BrainCircuit, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud, getCachedCustomQuestions, getCachedDeletedQuestionIds, getCachedQuestionVisibility, getMyCandidateInfo } from './cloudSync';
+import { submitGradedQuizCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud, getCachedCustomQuestions, getCachedDeletedQuestionIds, getCachedQuestionVisibility } from './cloudSync';
 
 const getCombinedQuestions = (): Question[] => {
   const generated = getCachedCustomQuestions();
@@ -233,36 +233,18 @@ const QuizDashboard: React.FC = () => {
     state.questions.forEach(q => { if (state.userAnswers[q.id] === q.correctOption) score++; });
     setState(prev => ({ ...prev, isReview: true, score }));
 
-    // Record score on leaderboard
+    // Submit raw answers for the server to grade and record on the
+    // leaderboard itself -- the client-side score above is only used for
+    // this device's own instant review screen, not trusted as the
+    // official result.
     if (state.questions.length > 0) {
-      const activeCode = sessionStorage.getItem('cissp_vault_code') || 'UNKNOWN';
-      let candidateName = '';
-      const myInfo = await getMyCandidateInfo();
-      if (myInfo && myInfo.code.toUpperCase() === activeCode.toUpperCase() && myInfo.candidateName) {
-        candidateName = myInfo.candidateName;
-      }
-
-      if (!candidateName) {
-        if (activeCode === 'ADMIN') {
-          candidateName = 'System Administrator';
-        } else {
-          candidateName = `Candidate (${activeCode})`;
-        }
-      }
-
-      const scorePercent = Math.round((score / state.questions.length) * 100);
-      const newEntry: LeaderboardEntry = {
-        id: `quiz-${Date.now()}`,
-        code: activeCode,
-        name: candidateName,
-        score: scorePercent,
-        type: 'Practice Quiz',
-        questionsCount: state.questions.length,
-        timestamp: new Date().toISOString(),
-        passed: scorePercent >= 70
-      };
-
-      await submitLeaderboardEntryCloud(newEntry);
+      const answers = state.questions.map(q => ({
+        questionId: q.id,
+        selectedOption: state.userAnswers[q.id] || '',
+        correctOption: q.correctOption, // fallback only, used if the server doesn't recognize this question ID (AI-generated)
+        difficulty: q.difficulty,
+      }));
+      await submitGradedQuizCloud('Practice Quiz', answers);
     }
   };
 

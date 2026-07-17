@@ -64,6 +64,11 @@ export interface InviteCode {
   createdBy: string;
   usedCount: number;
   candidateName?: string;
+  // Server-issued cryptographic receipt for the device that first redeemed
+  // this code, used to verify legitimate same-device re-logins without
+  // trusting a client-asserted claim. Never set or read by the client
+  // directly -- managed entirely by redeem_invite_code.ts.
+  redemptionReceipt?: string;
 }
 
 export interface LeaderboardEntry {

@@ -1,31 +1,11 @@
 import { getStore } from '@netlify/blobs';
-import crypto from 'crypto';
+import { encrypt, decrypt } from './_shared/encryption';
 import { requireAdmin } from './_shared/adminAuth';
 import { requireAuthenticated } from './_shared/authContext';
 
-const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
-const IV_LENGTH = 16;
 const BLOB_KEY = 'question_visibility';
 
 const DEFAULT_SETTINGS = JSON.stringify({ mode: 'default', selectedIds: [] });
-
-function encrypt(text: string): string {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let encrypted = cipher.update(text, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  return iv.toString('hex') + ':' + encrypted;
-}
-
-function decrypt(text: string): string {
-  const parts = text.split(':');
-  const iv = Buffer.from(parts.shift() || '', 'hex');
-  const encryptedText = Buffer.from(parts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
-  let decrypted = decipher.update(encryptedText).toString('utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
-}
 
 export const handler = async (event: any) => {
   const store = getStore({
