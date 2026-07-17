@@ -77,19 +77,13 @@ if (!fs.existsSync(dataDir)) {
 }
 
 // Pre-populate system defaults if not existing
-const DEFAULT_INVITE_CODE = 'CISSP2026';
 const DEFAULT_ADMIN_PASSCODE = 'ADMIN2026';
 
-// Initialize files if empty
+// Initialize files if empty. Note: the invite code registry intentionally
+// starts empty -- no default invite code is seeded. An admin must
+// explicitly create codes from the Admin Panel.
 readSecureFile('secure_leaderboard.enc', '[]');
-readSecureFile('secure_invite_codes.enc', JSON.stringify([
-  {
-    code: DEFAULT_INVITE_CODE,
-    createdAt: new Date().toISOString(),
-    createdBy: 'System Default',
-    usedCount: 0
-  }
-]));
+readSecureFile('secure_invite_codes.enc', '[]');
 readSecureFile('secure_admin_passcode.enc', DEFAULT_ADMIN_PASSCODE);
 
 // API Routes

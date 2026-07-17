@@ -8,15 +8,12 @@ import { InviteCode } from '../types';
 import { 
   fetchInviteCodesCloud, 
   redeemInviteCodeCloud, 
-  saveInviteCodesCloud,
   verifyAdminPasscodeCloud
 } from './cloudSync';
 
 interface SecurityGateProps {
   onUnlock: (isAdmin: boolean) => void;
 }
-
-const DEFAULT_INVITE_CODE = 'CISSP2026';
 
 const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
   const [passcode, setPasscode] = useState('');
@@ -36,19 +33,13 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
   // every visitor before they even logged in, which exposed it in plain text.
   useEffect(() => {
     const loadAndSyncCodes = async () => {
-      let loadedCodes = await fetchInviteCodesCloud();
-      
-      if (loadedCodes.length === 0) {
-        loadedCodes = [
-          {
-            code: DEFAULT_INVITE_CODE,
-            createdAt: new Date().toISOString(),
-            createdBy: 'System Default',
-            usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
-          }
-        ];
-        await saveInviteCodesCloud(loadedCodes);
-      }
+      const loadedCodes = await fetchInviteCodesCloud();
+
+      // Note: we deliberately do NOT seed a default invite code when the
+      // registry is empty. An empty registry means nobody can log in as a
+      // candidate until an admin explicitly creates a code from the Admin
+      // Panel. (Admin login itself is independent of invite codes -- it
+      // goes through the admin passcode -- so this never blocks admin access.)
 
       // If an invite code was shared via URL, pre-fill the input field only.
       // It still has to match a code that already exists in the admin's
@@ -74,7 +65,7 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
 
     loadAndSyncCodes();
 
-    // 3. Track codes already successfully redeemed on this specific device
+    // Track codes already successfully redeemed on this specific device
     const storedRedeemed = localStorage.getItem('cissp_my_redeemed_codes');
     if (storedRedeemed) {
       try {
@@ -84,19 +75,6 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       }
     }
   }, []);
-
-  const initializeDefaultCodes = async () => {
-    const defaultList: InviteCode[] = [
-      {
-        code: DEFAULT_INVITE_CODE,
-        createdAt: new Date().toISOString(),
-        createdBy: 'System Default',
-        usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
-      }
-    ];
-    await saveInviteCodesCloud(defaultList);
-    setActiveCodes(defaultList);
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

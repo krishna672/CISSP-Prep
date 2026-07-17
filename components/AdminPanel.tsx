@@ -20,7 +20,6 @@ import {
 } from './cloudSync';
 
 const DEFAULT_ADMIN_PASSCODE = 'ADMIN2026';
-const DEFAULT_INVITE_CODE = 'CISSP2026';
 
 const DOMAINS_LIST = [
   "Domain 1: Security and Risk Management",
@@ -122,11 +121,7 @@ const AdminPanel: React.FC = () => {
       setAdminPasscode(syncedAdminPass);
 
       const codes = await fetchInviteCodesCloud();
-      if (codes.length > 0) {
-        setInviteCodes(codes);
-      } else {
-        initializeDefaultCodes();
-      }
+      setInviteCodes(codes);
     };
     loadCodes();
 
@@ -343,19 +338,6 @@ const AdminPanel: React.FC = () => {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  };
-
-  const initializeDefaultCodes = async () => {
-    const defaultList: InviteCode[] = [
-      {
-        code: DEFAULT_INVITE_CODE,
-        createdAt: new Date().toISOString(),
-        createdBy: 'System Default',
-        usedCount: Number(localStorage.getItem('cissp_invite_used_count_' + DEFAULT_INVITE_CODE) || 0)
-      }
-    ];
-    await saveInviteCodesCloud(defaultList);
-    setInviteCodes(defaultList);
   };
 
   // Helper to generate a secure random 8-character code
@@ -925,12 +907,6 @@ const AdminPanel: React.FC = () => {
                       <p className="text-[11px] text-slate-500 font-medium">Verify active cryptographic invite codes below.</p>
                     </div>
                   </div>
-                  <button
-                    onClick={initializeDefaultCodes}
-                    className="text-[10px] font-black uppercase tracking-wider text-slate-400 hover:text-indigo-600 transition-colors"
-                  >
-                    Reset Defaults
-                  </button>
                 </div>
 
                 {/* Grid of invite codes */}
