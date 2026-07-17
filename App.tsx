@@ -11,7 +11,7 @@ import ExpandedDetailsModal from './components/ExpandedDetailsModal';
 import SecurityGate from './components/SecurityGate';
 import AdminPanel from './components/AdminPanel';
 import Leaderboard from './components/Leaderboard';
-import { fetchInviteCodesCloud, fetchMindMapOverridesCloud, saveMindMapOverridesCloud } from './components/cloudSync';
+import { verifyInviteCodeCloud, fetchMindMapOverridesCloud, saveMindMapOverridesCloud, logoutAdminSession, logoutCandidateSession } from './components/cloudSync';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -95,6 +95,11 @@ function App() {
   };
 
   const handleLock = () => {
+    if (isAdmin) {
+      logoutAdminSession();
+    } else {
+      logoutCandidateSession();
+    }
     sessionStorage.removeItem('cissp_vault_auth');
     sessionStorage.removeItem('cissp_vault_admin');
     sessionStorage.removeItem('cissp_vault_code');
@@ -114,9 +119,8 @@ function App() {
 
     const checkCodeStillValid = async () => {
       try {
-        const codes = await fetchInviteCodesCloud();
-        const stillExists = codes.some(c => c.code.toUpperCase() === activeCode.toUpperCase());
-        if (!stillExists) {
+        const result = await verifyInviteCodeCloud(activeCode);
+        if (!result.valid) {
           handleLock();
         }
       } catch (e) {
@@ -135,14 +139,17 @@ function App() {
   }, [isAuthenticated, isAdmin]);
 
   // Load admin-made mind map edits/additions from the cloud so every
-  // visitor sees them, not just the admin who made them.
+  // visitor sees them, not just the admin who made them. Runs once the
+  // user is actually authenticated -- the endpoint now requires a valid
+  // session (candidate or admin), so fetching before login would just 401.
   useEffect(() => {
+    if (!isAuthenticated) return;
     const loadMindMapOverrides = async () => {
       const overrides = await fetchMindMapOverridesCloud();
       setMindMapOverrides(overrides);
     };
     loadMindMapOverrides();
-  }, []);
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) {
     return <SecurityGate onUnlock={handleUnlock} />;

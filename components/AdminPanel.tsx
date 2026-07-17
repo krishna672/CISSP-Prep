@@ -41,18 +41,9 @@ const AdminPanel: React.FC = () => {
   const [adminTab, setAdminTab] = useState<'invite' | 'manual-studio' | 'leaderboard' | 'json-upload' | 'manage-questions'>('invite');
   const [inviteCodes, setInviteCodes] = useState<InviteCode[]>([]);
 
-  // Deleted/Blacklisted static questions
-  const [deletedStaticIds, setDeletedStaticIds] = useState<string[]>(() => {
-    const stored = localStorage.getItem('cissp_deleted_question_ids');
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch (e) {
-        console.error("Failed to parse deleted static IDs:", e);
-      }
-    }
-    return [];
-  });
+  // Deleted/Blacklisted static questions -- populated from the cloud in the
+  // mount effect below.
+  const [deletedStaticIds, setDeletedStaticIds] = useState<string[]>([]);
 
   // Question Management tab states
   const [manageSearchQuery, setManageSearchQuery] = useState('');

@@ -1,5 +1,7 @@
 import { getStore } from '@netlify/blobs';
 import crypto from 'crypto';
+import { requireAdmin } from './_shared/adminAuth';
+import { requireAuthenticated } from './_shared/authContext';
 
 const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
 const IV_LENGTH = 16;
@@ -33,6 +35,8 @@ export const handler = async (event: any) => {
   });
 
   if (event.httpMethod === 'GET') {
+    const authError = await requireAuthenticated(event);
+    if (authError) return authError;
     try {
       const raw = await store.get(BLOB_KEY);
       const data = raw ? decrypt(raw) : DEFAULT_OVERRIDES;
@@ -52,6 +56,8 @@ export const handler = async (event: any) => {
   }
 
   if (event.httpMethod === 'PUT') {
+    const authError = await requireAdmin(event);
+    if (authError) return authError;
     try {
       const bodyStr = event.body || DEFAULT_OVERRIDES;
       const parsed = JSON.parse(bodyStr);

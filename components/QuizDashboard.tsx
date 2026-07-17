@@ -5,29 +5,11 @@ import { questions as staticQuestions } from '../data/questionData';
 import { mindMapData } from '../data/mindMapData';
 import { Play, Clock, CheckCircle, XCircle, Award, Target, Settings2, ArrowRight, RotateCcw, Check, Loader2, Sparkles, ChevronDown, ListChecks, BrainCircuit, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud } from './cloudSync';
+import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud, getCachedCustomQuestions, getCachedDeletedQuestionIds, getCachedQuestionVisibility, getMyCandidateInfo } from './cloudSync';
 
 const getCombinedQuestions = (): Question[] => {
-  const stored = localStorage.getItem('cissp_generated_questions');
-  let generated: Question[] = [];
-  if (stored) {
-    try {
-      generated = JSON.parse(stored);
-    } catch (e) {
-      console.error("Failed to parse generated questions:", e);
-    }
-  }
-
-  // Filter out any deleted static/custom question IDs
-  const deletedStored = localStorage.getItem('cissp_deleted_question_ids');
-  let deletedIds: string[] = [];
-  if (deletedStored) {
-    try {
-      deletedIds = JSON.parse(deletedStored);
-    } catch (e) {
-      console.error("Failed to parse deleted question IDs:", e);
-    }
-  }
+  const generated = getCachedCustomQuestions();
+  const deletedIds = getCachedDeletedQuestionIds();
 
   let combined = [...staticQuestions, ...generated];
   if (deletedIds.length > 0) {
@@ -37,22 +19,15 @@ const getCombinedQuestions = (): Question[] => {
 
   // Apply the admin's question visibility setting: which pool candidates
   // are actually allowed to see (default bank / custom-only / handpicked).
-  const visibilityStored = localStorage.getItem('cissp_question_visibility');
-  if (visibilityStored) {
-    try {
-      const visibility = JSON.parse(visibilityStored);
-      const generatedIds = new Set(generated.map(q => q.id));
-      if (visibility.mode === 'default') {
-        combined = combined.filter(q => !generatedIds.has(q.id));
-      } else if (visibility.mode === 'custom') {
-        combined = combined.filter(q => generatedIds.has(q.id));
-      } else if (visibility.mode === 'selected' && Array.isArray(visibility.selectedIds)) {
-        const selectedSet = new Set(visibility.selectedIds);
-        combined = combined.filter(q => selectedSet.has(q.id));
-      }
-    } catch (e) {
-      console.error("Failed to parse question visibility settings:", e);
-    }
+  const visibility = getCachedQuestionVisibility();
+  const generatedIds = new Set(generated.map(q => q.id));
+  if (visibility.mode === 'default') {
+    combined = combined.filter(q => !generatedIds.has(q.id));
+  } else if (visibility.mode === 'custom') {
+    combined = combined.filter(q => generatedIds.has(q.id));
+  } else if (visibility.mode === 'selected' && Array.isArray(visibility.selectedIds)) {
+    const selectedSet = new Set(visibility.selectedIds);
+    combined = combined.filter(q => selectedSet.has(q.id));
   }
 
   return combined;
@@ -262,15 +237,9 @@ const QuizDashboard: React.FC = () => {
     if (state.questions.length > 0) {
       const activeCode = sessionStorage.getItem('cissp_vault_code') || 'UNKNOWN';
       let candidateName = '';
-      const storedCodes = localStorage.getItem('cissp_invite_codes');
-      if (storedCodes) {
-        try {
-          const codes = JSON.parse(storedCodes);
-          const matched = codes.find((c: any) => c.code.toUpperCase() === activeCode.toUpperCase());
-          if (matched && matched.candidateName) {
-            candidateName = matched.candidateName;
-          }
-        } catch (e) {}
+      const myInfo = await getMyCandidateInfo();
+      if (myInfo && myInfo.code.toUpperCase() === activeCode.toUpperCase() && myInfo.candidateName) {
+        candidateName = myInfo.candidateName;
       }
 
       if (!candidateName) {

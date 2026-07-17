@@ -1,5 +1,6 @@
 import { getStore } from '@netlify/blobs';
 import crypto from 'crypto';
+import { requireAdmin } from './_shared/adminAuth';
 
 const ENCRYPTION_KEY = Buffer.from('c1sspm1ndmapandqu1zmaster2026sec', 'utf-8'); // Must be exactly 32 bytes
 const IV_LENGTH = 16;
@@ -27,15 +28,17 @@ function decrypt(text: string): string {
 // log in as a candidate until an admin explicitly creates a code.
 const EMPTY_CODES = '[]';
 
+// This endpoint exposes the FULL registry -- every candidate's code and
+// name. It's admin-only for both reads and writes. Candidates never need
+// to see this list; they use verify_invite_code / redeem_invite_code
+// instead, which only ever reveal information about the one code they
+// typed in.
 export const handler = async (event: any) => {
+  const authError = await requireAdmin(event);
+  if (authError) return authError;
+
   const store = getStore({
     name: 'cissp-vault',
-    // Netlify's automatic zero-config Blobs detection has been unreliable on
-    // some sites (MissingBlobsEnvironmentError even though everything is set
-    // up correctly per the docs). Passing siteID + token explicitly sidesteps
-    // that entirely. SITE_ID is always available at runtime; BLOBS_TOKEN must
-    // be set in Site settings -> Environment variables (a Netlify Personal
-    // Access Token, scoped to Functions).
     siteID: process.env.SITE_ID,
     token: process.env.BLOBS_TOKEN,
   });

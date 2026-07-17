@@ -4,7 +4,7 @@ import { Question, LeaderboardEntry } from '../types';
 import { Shield, Clock, BrainCircuit, Loader2, Sparkles, AlertCircle, Trophy, History, RefreshCcw, Activity, GraduationCap, BarChart3, Settings2, Sliders, Download, FileText, CheckCircle2, XCircle, ArrowRight, Gauge, Check, Info } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { questions as staticQuestions } from '../data/questionData';
-import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud } from './cloudSync';
+import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud, getCachedCustomQuestions, getCachedDeletedQuestionIds, getCachedQuestionVisibility, getMyCandidateInfo } from './cloudSync';
 
 
 // Official CISSP Weights (2024 Standard)
@@ -23,26 +23,8 @@ const PASSING_SCORE = 700;
 const SECONDS_PER_QUESTION = 72;
 
 const getCombinedQuestions = (): Question[] => {
-  const stored = localStorage.getItem('cissp_generated_questions');
-  let generated: Question[] = [];
-  if (stored) {
-    try {
-      generated = JSON.parse(stored);
-    } catch (e) {
-      console.error("Failed to parse generated questions:", e);
-    }
-  }
-
-  // Filter out any deleted static/custom question IDs
-  const deletedStored = localStorage.getItem('cissp_deleted_question_ids');
-  let deletedIds: string[] = [];
-  if (deletedStored) {
-    try {
-      deletedIds = JSON.parse(deletedStored);
-    } catch (e) {
-      console.error("Failed to parse deleted question IDs:", e);
-    }
-  }
+  const generated = getCachedCustomQuestions();
+  const deletedIds = getCachedDeletedQuestionIds();
 
   let combined = [...staticQuestions, ...generated];
   if (deletedIds.length > 0) {
@@ -52,22 +34,15 @@ const getCombinedQuestions = (): Question[] => {
 
   // Apply the admin's question visibility setting: which pool candidates
   // are actually allowed to see (default bank / custom-only / handpicked).
-  const visibilityStored = localStorage.getItem('cissp_question_visibility');
-  if (visibilityStored) {
-    try {
-      const visibility = JSON.parse(visibilityStored);
-      const generatedIds = new Set(generated.map(q => q.id));
-      if (visibility.mode === 'default') {
-        combined = combined.filter(q => !generatedIds.has(q.id));
-      } else if (visibility.mode === 'custom') {
-        combined = combined.filter(q => generatedIds.has(q.id));
-      } else if (visibility.mode === 'selected' && Array.isArray(visibility.selectedIds)) {
-        const selectedSet = new Set(visibility.selectedIds);
-        combined = combined.filter(q => selectedSet.has(q.id));
-      }
-    } catch (e) {
-      console.error("Failed to parse question visibility settings:", e);
-    }
+  const visibility = getCachedQuestionVisibility();
+  const generatedIds = new Set(generated.map(q => q.id));
+  if (visibility.mode === 'default') {
+    combined = combined.filter(q => !generatedIds.has(q.id));
+  } else if (visibility.mode === 'custom') {
+    combined = combined.filter(q => generatedIds.has(q.id));
+  } else if (visibility.mode === 'selected' && Array.isArray(visibility.selectedIds)) {
+    const selectedSet = new Set(visibility.selectedIds);
+    combined = combined.filter(q => selectedSet.has(q.id));
   }
 
   return combined;
@@ -223,45 +198,36 @@ const ExamSimulator: React.FC = () => {
   useEffect(() => {
     if (state.status === 'FINISHED' && state.questionHistory.length > 0) {
       const activeCode = sessionStorage.getItem('cissp_vault_code') || 'UNKNOWN';
-      
-      let candidateName = '';
-      const storedCodes = localStorage.getItem('cissp_invite_codes');
-      if (storedCodes) {
-        try {
-          const codes = JSON.parse(storedCodes);
-          const matched = codes.find((c: any) => c.code.toUpperCase() === activeCode.toUpperCase());
-          if (matched && matched.candidateName) {
-            candidateName = matched.candidateName;
-          }
-        } catch (e) {}
-      }
-      
-      if (!candidateName) {
-        if (activeCode === 'ADMIN') {
-          candidateName = 'System Administrator';
-        } else {
-          candidateName = `Candidate (${activeCode})`;
-        }
-      }
 
       // Check if we already logged this specific finished session to avoid duplicates
       const sessionKey = `cissp_exam_session_${state.questionHistory.length}_${state.abilityEstimate}`;
       const isAlreadyLogged = sessionStorage.getItem(sessionKey) === 'true';
       if (!isAlreadyLogged) {
         sessionStorage.setItem(sessionKey, 'true');
-        const newEntry: LeaderboardEntry = {
-          id: `cat-${Date.now()}`,
-          code: activeCode,
-          name: candidateName,
-          score: Math.round(state.abilityEstimate),
-          type: 'CAT Exam',
-          questionsCount: state.questionHistory.length,
-          timestamp: new Date().toISOString(),
-          passed: state.abilityEstimate >= PASSING_SCORE
-        };
 
-        // Fire and forget async call to submit score
-        submitLeaderboardEntryCloud(newEntry).catch(e => console.error("Leaderboard submit failed", e));
+        (async () => {
+          let candidateName = '';
+          const myInfo = await getMyCandidateInfo();
+          if (myInfo && myInfo.code.toUpperCase() === activeCode.toUpperCase() && myInfo.candidateName) {
+            candidateName = myInfo.candidateName;
+          }
+          if (!candidateName) {
+            candidateName = activeCode === 'ADMIN' ? 'System Administrator' : `Candidate (${activeCode})`;
+          }
+
+          const newEntry: LeaderboardEntry = {
+            id: `cat-${Date.now()}`,
+            code: activeCode,
+            name: candidateName,
+            score: Math.round(state.abilityEstimate),
+            type: 'CAT Exam',
+            questionsCount: state.questionHistory.length,
+            timestamp: new Date().toISOString(),
+            passed: state.abilityEstimate >= PASSING_SCORE
+          };
+
+          submitLeaderboardEntryCloud(newEntry).catch(e => console.error("Leaderboard submit failed", e));
+        })();
       }
     }
   }, [state.status, state.abilityEstimate, state.questionHistory]);

@@ -1,5 +1,7 @@
 import { getStore } from '@netlify/blobs';
 import crypto from 'crypto';
+import { requireAdmin } from './_shared/adminAuth';
+import { requireAuthenticated, getAuthContext } from './_shared/authContext';
 
 // Same encryption approach as the original server.ts, so data at rest
 // stays encrypted even though it now lives in Netlify Blobs instead of
@@ -27,37 +29,17 @@ function decrypt(text: string): string {
 }
 
 export const handler = async (event: any) => {
-  // Temporary diagnostic: hit /api/leaderboard?diag=1 to see, without
-  // exposing secret values, whether the required env vars are actually
-  // reaching this function. Remove this block once things are confirmed
-  // working.
-  if (event.queryStringParameters && event.queryStringParameters.diag === '1') {
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        SITE_ID_present: Boolean(process.env.SITE_ID),
-        BLOBS_TOKEN_present: Boolean(process.env.BLOBS_TOKEN),
-        BLOBS_TOKEN_length: process.env.BLOBS_TOKEN ? process.env.BLOBS_TOKEN.length : 0,
-        NODE_ENV: process.env.NODE_ENV || null,
-        CONTEXT: process.env.CONTEXT || null,
-      }),
-    };
-  }
-
   const store = getStore({
     name: 'cissp-vault',
-    // Netlify's automatic zero-config Blobs detection has been unreliable on
-    // some sites (MissingBlobsEnvironmentError even though everything is set
-    // up correctly per the docs). Passing siteID + token explicitly sidesteps
-    // that entirely. SITE_ID is always available at runtime; BLOBS_TOKEN must
-    // be set in Site settings -> Environment variables (a Netlify Personal
-    // Access Token, scoped to Functions).
     siteID: process.env.SITE_ID,
     token: process.env.BLOBS_TOKEN,
   });
 
+  // GET: visible to any authenticated candidate or admin -- not the open
+  // internet. Requires either session type.
   if (event.httpMethod === 'GET') {
+    const authError = await requireAuthenticated(event);
+    if (authError) return authError;
     try {
       const raw = await store.get(BLOB_KEY);
       const data = raw ? decrypt(raw) : '[]';
@@ -76,7 +58,57 @@ export const handler = async (event: any) => {
     }
   }
 
+  // POST: a candidate submitting their own single result. Requires a valid
+  // session (candidate or admin) -- and the entry's code/name are always
+  // overwritten with whatever the session actually is, never trusted from
+  // the request body, so nobody can submit a score under someone else's
+  // name/code.
+  if (event.httpMethod === 'POST') {
+    const ctx = await getAuthContext(event);
+    if (!ctx) {
+      return { statusCode: 401, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Unauthorized: valid session required.' }) };
+    }
+    try {
+      const newEntry = JSON.parse(event.body || '{}');
+      if (!newEntry || typeof newEntry.id !== 'string' || newEntry.id.startsWith('mock-')) {
+        return { statusCode: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'Invalid entry' }) };
+      }
+
+      // Identity is server-authoritative, not client-supplied.
+      if (ctx.isAdmin) {
+        newEntry.code = newEntry.code === 'ADMIN' ? 'ADMIN' : (newEntry.code || 'ADMIN');
+        newEntry.name = newEntry.name || 'System Administrator';
+      } else {
+        newEntry.code = ctx.candidateCode;
+        newEntry.name = ctx.candidateName;
+      }
+
+      const raw = await store.get(BLOB_KEY);
+      const existing = raw ? JSON.parse(decrypt(raw)) : [];
+      const entries = Array.isArray(existing) ? existing : [];
+      const updated = [newEntry, ...entries.filter((e: any) => e.id !== newEntry.id)];
+
+      await store.set(BLOB_KEY, encrypt(JSON.stringify(updated)));
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      };
+    } catch (err) {
+      console.error('Blobs POST error (leaderboard):', err);
+      return {
+        statusCode: 500,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Failed to submit leaderboard entry' }),
+      };
+    }
+  }
+
+  // PUT: bulk overwrite -- used by the Admin Panel to delete individual
+  // entries or clear the board entirely. Admin session required.
   if (event.httpMethod === 'PUT') {
+    const authError = await requireAdmin(event);
+    if (authError) return authError;
     try {
       const bodyStr = event.body || '[]';
       JSON.parse(bodyStr); // validate before persisting

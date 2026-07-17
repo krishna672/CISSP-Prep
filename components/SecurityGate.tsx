@@ -4,11 +4,10 @@ import {
   AlertCircle, CheckCircle, Map, BookOpen, GraduationCap, 
   Layers, ShieldCheck, ChevronRight
 } from 'lucide-react';
-import { InviteCode } from '../types';
 import { 
-  fetchInviteCodesCloud, 
-  redeemInviteCodeCloud, 
-  verifyAdminPasscodeCloud
+  loginCandidateCloud, 
+  verifyAdminPasscodeCloud,
+  saveMyCandidateInfo
 } from './cloudSync';
 
 interface SecurityGateProps {
@@ -23,47 +22,33 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
   const [successMessage, setSuccessMessage] = useState('');
 
   // Local storage cache keys
-  const [activeCodes, setActiveCodes] = useState<InviteCode[]>([]);
   const [redeemedCodesOnDevice, setRedeemedCodesOnDevice] = useState<string[]>([]);
 
-  // Initialize and load list of active invite codes.
   // Note: the admin passcode is intentionally never fetched or cached here.
   // It's verified server-side (see handleSubmit) so it never touches the
-  // browser -- previously it was pulled down and stored in localStorage for
-  // every visitor before they even logged in, which exposed it in plain text.
+  // browser. Similarly, the full invite code registry is never fetched by
+  // candidates at all -- individual codes are checked server-side via
+  // verifyInviteCodeCloud, which only ever reveals info about the one code
+  // typed in.
   useEffect(() => {
-    const loadAndSyncCodes = async () => {
-      const loadedCodes = await fetchInviteCodesCloud();
+    // If an invite code was shared via URL, pre-fill the input field only.
+    // It still has to match a code that already exists in the admin's
+    // registry to actually grant access (checked server-side in
+    // handleSubmit) -- we never create/register a code just because
+    // someone typed or linked one in.
+    const params = new URLSearchParams(window.location.search);
+    const inviteParam = params.get('invite') || params.get('code');
+    if (inviteParam) {
+      setPasscode(inviteParam.trim().toUpperCase());
 
-      // Note: we deliberately do NOT seed a default invite code when the
-      // registry is empty. An empty registry means nobody can log in as a
-      // candidate until an admin explicitly creates a code from the Admin
-      // Panel. (Admin login itself is independent of invite codes -- it
-      // goes through the admin passcode -- so this never blocks admin access.)
-
-      // If an invite code was shared via URL, pre-fill the input field only.
-      // It still has to match a code that already exists in the admin's
-      // registry to actually grant access (checked in handleSubmit) -- we
-      // never create/register a code just because someone typed or linked
-      // one in.
-      const params = new URLSearchParams(window.location.search);
-      const inviteParam = params.get('invite') || params.get('code');
-      if (inviteParam) {
-        setPasscode(inviteParam.trim().toUpperCase());
-
-        // Clean query params to keep the url neat and avoid re-processing on reload
-        try {
-          const cleanUrl = window.location.pathname + window.location.hash;
-          window.history.replaceState({}, document.title, cleanUrl);
-        } catch (e) {
-          console.error("Failed to clean query parameters from URL:", e);
-        }
+      // Clean query params to keep the url neat and avoid re-processing on reload
+      try {
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+      } catch (e) {
+        console.error("Failed to clean query parameters from URL:", e);
       }
-
-      setActiveCodes(loadedCodes);
-    };
-
-    loadAndSyncCodes();
+    }
 
     // Track codes already successfully redeemed on this specific device
     const storedRedeemed = localStorage.getItem('cissp_my_redeemed_codes');
@@ -85,7 +70,7 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
 
     // Verify against the admin passcode server-side. The real passcode
     // value is never sent to or stored in the browser -- only a yes/no
-    // answer comes back.
+    // answer (plus a session token on success) comes back.
     const isAdminPasscode = await verifyAdminPasscodeCloud(inputPass);
 
     if (isAdminPasscode) {
@@ -103,28 +88,22 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
       return;
     }
 
-    // Load fresh codes from cloud first to ensure up-to-date validation
-    const freshCodes = await fetchInviteCodesCloud();
-    setActiveCodes(freshCodes);
+    const isAlreadyRedeemedOnDevice = redeemedCodesOnDevice.includes(inputUpper);
 
-    const matchedCodeIndex = freshCodes.findIndex(c => c.code.toUpperCase() === inputUpper);
+    // One server-side transaction: validates the code, enforces the
+    // one-use rule (except on this same device), conditionally redeems
+    // it, and issues a real session token on success. Never fetches or
+    // exposes the full registry of everyone else's codes/names.
+    const result = await loginCandidateCloud(inputUpper, isAlreadyRedeemedOnDevice);
 
     // Codes are never auto-created or auto-registered from user input --
     // if it isn't already in the admin's registry, it's rejected outright.
-    if (matchedCodeIndex === -1) {
-      setError('Access Denied. Invalid Invite Code.');
-      if (navigator.vibrate) {
-        navigator.vibrate(100);
-      }
-      return;
-    }
-
-    const targetCode = freshCodes[matchedCodeIndex];
-    const isAlreadyRedeemedOnDevice = redeemedCodesOnDevice.includes(targetCode.code.toUpperCase());
-
-    // Enforce strictly 1 use per invite code, EXCEPT if it was already redeemed on this specific device
-    if (targetCode.usedCount >= 1 && !isAlreadyRedeemedOnDevice) {
-      setError('Access Denied. This invite code has already been redeemed and is limited to exactly 1 user.');
+    if (!result.success) {
+      setError(
+        result.reason === 'already_used'
+          ? 'Access Denied. This invite code has already been redeemed and is limited to exactly 1 user.'
+          : 'Access Denied. Invalid Invite Code.'
+      );
       if (navigator.vibrate) {
         navigator.vibrate(100);
       }
@@ -134,11 +113,15 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     setSuccess(true);
     setSuccessMessage('Invite Code Accepted. Loading Candidate Vault...');
 
-    // Increment usage count in local & cloud ONLY if this is the first redemption on this device
-    if (!isAlreadyRedeemedOnDevice) {
-      await redeemInviteCodeCloud(targetCode.code);
+    const candidateName = result.candidateName || `Candidate (${inputUpper})`;
 
-      const newRedeemedList = [...redeemedCodesOnDevice, targetCode.code.toUpperCase()];
+    // Cache ONLY this device's own record (never the full registry) so the
+    // quiz/exam screens can label leaderboard submissions without needing
+    // to read everyone else's invite codes.
+    await saveMyCandidateInfo(inputUpper, candidateName);
+
+    if (!isAlreadyRedeemedOnDevice) {
+      const newRedeemedList = [...redeemedCodesOnDevice, inputUpper];
       localStorage.setItem('cissp_my_redeemed_codes', JSON.stringify(newRedeemedList));
       setRedeemedCodesOnDevice(newRedeemedList);
     }
@@ -146,7 +129,7 @@ const SecurityGate: React.FC<SecurityGateProps> = ({ onUnlock }) => {
     // Save session info
     sessionStorage.setItem('cissp_vault_auth', 'true');
     sessionStorage.setItem('cissp_vault_admin', 'false');
-    sessionStorage.setItem('cissp_vault_code', targetCode.code.toUpperCase());
+    sessionStorage.setItem('cissp_vault_code', inputUpper);
 
     setTimeout(() => {
       onUnlock(false);
