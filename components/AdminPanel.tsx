@@ -86,6 +86,14 @@ const AdminPanel: React.FC = () => {
   const [visibilitySaving, setVisibilitySaving] = useState(false);
   const [visibilitySuccess, setVisibilitySuccess] = useState(false);
 
+  // Bulk-delete mode for the question bank -- kept entirely separate from
+  // the "handpicked selection" visibility checkboxes above, so selecting
+  // questions to delete never gets confused with selecting questions to
+  // show candidates.
+  const [bulkDeleteMode, setBulkDeleteMode] = useState(false);
+  const [bulkDeleteSelectedIds, setBulkDeleteSelectedIds] = useState<string[]>([]);
+  const [pendingBulkDelete, setPendingBulkDelete] = useState(false);
+
   // Manual Custom Question States
   const [manualDomain, setManualDomain] = useState<string>('Domain 1: Security and Risk Management');
   const [manualDifficulty, setManualDifficulty] = useState<'Basic' | 'Moderate' | 'Hard'>('Moderate');
@@ -452,6 +460,61 @@ const AdminPanel: React.FC = () => {
       setDeletedStaticIds(updated);
       saveDeletedQuestionIdsCloud(updated);
     }
+  };
+
+  // Deletes many questions at once (custom + default alike) in a single
+  // pair of cloud saves, instead of one save per question.
+  const handleBulkDeleteQuestions = (ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+
+    const customIdsToDelete = generatedPool.filter(q => idSet.has(q.id)).map(q => q.id);
+    const staticIdsToDelete = ids.filter(id => !customIdsToDelete.includes(id));
+
+    if (customIdsToDelete.length > 0) {
+      const updatedPool = generatedPool.filter(q => !idSet.has(q.id));
+      setGeneratedPool(updatedPool);
+      saveCustomQuestionsCloud(updatedPool);
+    }
+
+    if (staticIdsToDelete.length > 0) {
+      const updatedDeleted = Array.from(new Set([...deletedStaticIds, ...staticIdsToDelete]));
+      setDeletedStaticIds(updatedDeleted);
+      saveDeletedQuestionIdsCloud(updatedDeleted);
+    }
+  };
+
+  const handleToggleBulkDeleteMode = () => {
+    setBulkDeleteMode(prev => !prev);
+    setBulkDeleteSelectedIds([]);
+    setPendingBulkDelete(false);
+  };
+
+  const handleToggleBulkDeleteSelected = (id: string) => {
+    setBulkDeleteSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(sid => sid !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllForBulkDelete = (ids: string[]) => {
+    setBulkDeleteSelectedIds(prev => Array.from(new Set([...prev, ...ids])));
+  };
+
+  const handleDeselectAllForBulkDelete = (ids: string[]) => {
+    setBulkDeleteSelectedIds(prev => prev.filter(id => !ids.includes(id)));
+  };
+
+  const handleConfirmBulkDelete = () => {
+    if (bulkDeleteSelectedIds.length === 0) return;
+    if (!pendingBulkDelete) {
+      setPendingBulkDelete(true);
+      setTimeout(() => setPendingBulkDelete(false), 4000);
+      return;
+    }
+    handleBulkDeleteQuestions(bulkDeleteSelectedIds);
+    setBulkDeleteSelectedIds([]);
+    setPendingBulkDelete(false);
+    setBulkDeleteMode(false);
   };
 
   const handleRestoreAllQuestions = () => {
@@ -1632,28 +1695,66 @@ const AdminPanel: React.FC = () => {
                 </div>
               </div>
 
-              {/* Reset/Restore static questions if any are deleted */}
-              {deletedStaticIds.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
-                  onClick={handleRestoreAllQuestions}
+                  onClick={handleToggleBulkDeleteMode}
                   className={`px-4 py-2 border rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm ${
-                    restoreSuccess
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
-                      : pendingRestore
-                      ? 'bg-rose-500 border-rose-600 text-white animate-pulse'
-                      : 'bg-rose-50 border-rose-100 text-rose-600 hover:bg-rose-100'
+                    bulkDeleteMode
+                      ? 'bg-rose-600 border-rose-600 text-white'
+                      : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
                   }`}
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${pendingRestore ? 'animate-spin' : ''}`} />
-                  {restoreSuccess
-                    ? 'Default Questions Restored!'
-                    : pendingRestore
-                    ? 'Click again to Confirm Restore'
-                    : `Restore ${deletedStaticIds.length} Deleted Default Questions`}
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {bulkDeleteMode ? 'Cancel Bulk Delete' : 'Bulk Delete Questions'}
                 </button>
-              )}
+
+                {/* Reset/Restore static questions if any are deleted */}
+                {deletedStaticIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleRestoreAllQuestions}
+                    className={`px-4 py-2 border rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center gap-1.5 cursor-pointer shadow-sm ${
+                      restoreSuccess
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                        : pendingRestore
+                        ? 'bg-rose-500 border-rose-600 text-white animate-pulse'
+                        : 'bg-rose-50 border-rose-100 text-rose-600 hover:bg-rose-100'
+                    }`}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${pendingRestore ? 'animate-spin' : ''}`} />
+                    {restoreSuccess
+                      ? 'Default Questions Restored!'
+                      : pendingRestore
+                      ? 'Click again to Confirm Restore'
+                      : `Restore ${deletedStaticIds.length} Deleted Default Questions`}
+                  </button>
+                )}
+              </div>
             </div>
+
+            {bulkDeleteMode && (
+              <div className="flex items-center justify-between gap-3 flex-wrap bg-rose-50 border border-rose-100 rounded-2xl px-4 py-3">
+                <span className="text-[11px] font-black text-rose-700 uppercase tracking-wider">
+                  {bulkDeleteSelectedIds.length} question{bulkDeleteSelectedIds.length === 1 ? '' : 's'} selected for deletion
+                </span>
+                <button
+                  type="button"
+                  onClick={handleConfirmBulkDelete}
+                  disabled={bulkDeleteSelectedIds.length === 0}
+                  className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    pendingBulkDelete
+                      ? 'bg-rose-700 text-white animate-pulse'
+                      : 'bg-rose-600 hover:bg-rose-700 text-white'
+                  }`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {pendingBulkDelete
+                    ? 'Click Again to Confirm'
+                    : `Delete ${bulkDeleteSelectedIds.length} Selected`}
+                </button>
+              </div>
+            )}
 
             {/* Question Visibility Controls */}
             <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-5 space-y-4">
@@ -1855,7 +1956,26 @@ const AdminPanel: React.FC = () => {
                       <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
                         Showing {visibleQuestions.length} of {filteredQuestions.length} matching questions
                       </div>
-                      {questionVisibility.mode === 'selected' && (
+                      {bulkDeleteMode && (
+                        <div className="flex items-center gap-3 text-[10px] font-black uppercase tracking-wider">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectAllForBulkDelete(filteredQuestions.map(q => q.id))}
+                            className="text-rose-600 hover:text-rose-700 cursor-pointer"
+                          >
+                            Select All {filteredQuestions.length} Matching
+                          </button>
+                          <span className="text-slate-300">&middot;</span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeselectAllForBulkDelete(filteredQuestions.map(q => q.id))}
+                            className="text-slate-500 hover:text-slate-700 cursor-pointer"
+                          >
+                            Deselect Matching
+                          </button>
+                        </div>
+                      )}
+                      {!bulkDeleteMode && questionVisibility.mode === 'selected' && (
                         <div className="flex items-center gap-3 text-[10px] font-black uppercase tracking-wider">
                           <button
                             type="button"
@@ -1882,9 +2002,10 @@ const AdminPanel: React.FC = () => {
                           key={q.id} 
                           q={q as any} 
                           onDelete={() => handleManageDeleteQuestion(q)} 
-                          selectable={questionVisibility.mode === 'selected'}
-                          isSelected={questionVisibility.selectedIds.includes(q.id)}
-                          onToggleSelect={() => handleToggleQuestionSelected(q.id)}
+                          selectable={bulkDeleteMode || questionVisibility.mode === 'selected'}
+                          isSelected={bulkDeleteMode ? bulkDeleteSelectedIds.includes(q.id) : questionVisibility.selectedIds.includes(q.id)}
+                          onToggleSelect={() => bulkDeleteMode ? handleToggleBulkDeleteSelected(q.id) : handleToggleQuestionSelected(q.id)}
+                          selectionTone={bulkDeleteMode ? 'danger' : 'default'}
                         />
                       ))}
                     </div>
@@ -1988,7 +2109,8 @@ const ManageQuestionCard: React.FC<{
   selectable?: boolean;
   isSelected?: boolean;
   onToggleSelect?: () => void;
-}> = ({ q, onDelete, selectable, isSelected, onToggleSelect }) => {
+  selectionTone?: 'default' | 'danger';
+}> = ({ q, onDelete, selectable, isSelected, onToggleSelect, selectionTone = 'default' }) => {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
@@ -2011,15 +2133,19 @@ const ManageQuestionCard: React.FC<{
     setPendingDelete(false);
   };
 
+  const activeBg = selectionTone === 'danger' ? 'bg-rose-50/50' : 'bg-indigo-50/50';
+  const activeCheckboxBg = selectionTone === 'danger' ? 'bg-rose-600 border-rose-600' : 'bg-indigo-600 border-indigo-600';
+  const inactiveCheckboxHover = selectionTone === 'danger' ? 'hover:border-rose-400' : 'hover:border-indigo-400';
+
   return (
-    <div className={`p-5 hover:bg-slate-50/50 transition-colors ${selectable && isSelected ? 'bg-indigo-50/50' : ''}`}>
+    <div className={`p-5 hover:bg-slate-50/50 transition-colors ${selectable && isSelected ? activeBg : ''}`}>
       <div className="flex items-start justify-between gap-4">
         {selectable && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onToggleSelect && onToggleSelect(); }}
             className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
-              isSelected ? 'bg-indigo-600 border-indigo-600' : 'bg-white border-slate-300 hover:border-indigo-400'
+              isSelected ? activeCheckboxBg : `bg-white border-slate-300 ${inactiveCheckboxHover}`
             }`}
             aria-label={isSelected ? 'Deselect question' : 'Select question'}
           >
