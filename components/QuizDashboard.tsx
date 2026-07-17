@@ -5,7 +5,7 @@ import { questions as staticQuestions } from '../data/questionData';
 import { mindMapData } from '../data/mindMapData';
 import { Play, Clock, CheckCircle, XCircle, Award, Target, Settings2, ArrowRight, RotateCcw, Check, Loader2, Sparkles, ChevronDown, ListChecks, BrainCircuit, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
-import { submitLeaderboardEntryCloud } from './cloudSync';
+import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud } from './cloudSync';
 
 const getCombinedQuestions = (): Question[] => {
   const stored = localStorage.getItem('cissp_generated_questions');
@@ -29,11 +29,32 @@ const getCombinedQuestions = (): Question[] => {
     }
   }
 
-  const combined = [...staticQuestions, ...generated];
+  let combined = [...staticQuestions, ...generated];
   if (deletedIds.length > 0) {
     const deletedSet = new Set(deletedIds);
-    return combined.filter(q => !deletedSet.has(q.id));
+    combined = combined.filter(q => !deletedSet.has(q.id));
   }
+
+  // Apply the admin's question visibility setting: which pool candidates
+  // are actually allowed to see (default bank / custom-only / handpicked).
+  const visibilityStored = localStorage.getItem('cissp_question_visibility');
+  if (visibilityStored) {
+    try {
+      const visibility = JSON.parse(visibilityStored);
+      const generatedIds = new Set(generated.map(q => q.id));
+      if (visibility.mode === 'default') {
+        combined = combined.filter(q => !generatedIds.has(q.id));
+      } else if (visibility.mode === 'custom') {
+        combined = combined.filter(q => generatedIds.has(q.id));
+      } else if (visibility.mode === 'selected' && Array.isArray(visibility.selectedIds)) {
+        const selectedSet = new Set(visibility.selectedIds);
+        combined = combined.filter(q => selectedSet.has(q.id));
+      }
+    } catch (e) {
+      console.error("Failed to parse question visibility settings:", e);
+    }
+  }
+
   return combined;
 };
 
@@ -48,6 +69,7 @@ const QuizDashboard: React.FC = () => {
     return localStorage.getItem('cissp_active_engine') || 'gemini-3.5-flash';
   });
   const [usedOfflineFallback, setUsedOfflineFallback] = useState<boolean>(false);
+  const [poolReady, setPoolReady] = useState(false);
   const [state, setState] = useState<QuizState>({
     isActive: false,
     currentDomain: 'All',
@@ -62,6 +84,22 @@ const QuizDashboard: React.FC = () => {
   });
 
   const domains = Array.from(new Set(mindMapData.children?.map(d => d.label))).sort();
+
+  // Refresh the candidate's view of the admin-managed question pool (custom
+  // questions, deleted default questions, and visibility mode) from the
+  // cloud before allowing a quiz to start, so it reflects the latest admin
+  // configuration rather than a possibly-stale local cache.
+  useEffect(() => {
+    const syncQuestionPool = async () => {
+      await Promise.all([
+        fetchCustomQuestionsCloud(),
+        fetchDeletedQuestionIdsCloud(),
+        fetchQuestionVisibilityCloud(),
+      ]);
+      setPoolReady(true);
+    };
+    syncQuestionPool();
+  }, []);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval>;
@@ -378,11 +416,11 @@ const QuizDashboard: React.FC = () => {
               </div>
               <div className="flex items-end">
                 <button 
-                  disabled={isGenerating}
+                  disabled={isGenerating || !poolReady}
                   onClick={generateAIQuestions}
                   className="w-full h-[52px] sm:h-[56px] bg-indigo-600 text-white rounded-2xl font-black text-sm sm:text-base hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-wait"
                 >
-                  {isGenerating ? (<><Loader2 className="w-5 h-5 animate-spin" /> Synthesizing...</>) : (<><Sparkles className="w-5 h-5 fill-current" /> Start AI Simulation</>)}
+                  {isGenerating ? (<><Loader2 className="w-5 h-5 animate-spin" /> Synthesizing...</>) : !poolReady ? (<><Loader2 className="w-5 h-5 animate-spin" /> Syncing Question Pool...</>) : (<><Sparkles className="w-5 h-5 fill-current" /> Start AI Simulation</>)}
                 </button>
               </div>
             </div>

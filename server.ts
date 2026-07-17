@@ -159,6 +159,94 @@ app.put('/api/admin_passcode', (req, res) => {
   }
 });
 
+// 3b. Admin passcode verification (never returns the actual passcode)
+app.post('/api/verify_admin', (req, res) => {
+  try {
+    const candidate = typeof req.body?.passcode === 'string' ? req.body.passcode.trim() : '';
+    const actualPasscode = readSecureFile('secure_admin_passcode.enc', DEFAULT_ADMIN_PASSCODE);
+    const isAdmin = candidate.length > 0 && candidate === actualPasscode;
+    res.setHeader('Content-Type', 'application/json');
+    res.json({ isAdmin });
+  } catch (err) {
+    console.error('API Error verify_admin POST:', err);
+    res.status(200).json({ isAdmin: false });
+  }
+});
+
+// 4. Custom Questions (admin-added questions, shared across all candidates)
+app.get('/api/custom_questions', (req, res) => {
+  try {
+    const data = readSecureFile('secure_custom_questions.enc', '[]');
+    res.setHeader('Content-Type', 'application/json');
+    res.send(data);
+  } catch (err) {
+    console.error('API Error custom_questions GET:', err);
+    res.status(500).json({ error: 'Failed to retrieve custom questions' });
+  }
+});
+
+app.put('/api/custom_questions', (req, res) => {
+  try {
+    const bodyStr = JSON.stringify(req.body);
+    writeSecureFile('secure_custom_questions.enc', bodyStr);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(bodyStr);
+  } catch (err) {
+    console.error('API Error custom_questions PUT:', err);
+    res.status(500).json({ error: 'Failed to save custom questions' });
+  }
+});
+
+// 5. Deleted (blacklisted) default question IDs
+app.get('/api/deleted_question_ids', (req, res) => {
+  try {
+    const data = readSecureFile('secure_deleted_question_ids.enc', '[]');
+    res.setHeader('Content-Type', 'application/json');
+    res.send(data);
+  } catch (err) {
+    console.error('API Error deleted_question_ids GET:', err);
+    res.status(500).json({ error: 'Failed to retrieve deleted question IDs' });
+  }
+});
+
+app.put('/api/deleted_question_ids', (req, res) => {
+  try {
+    const bodyStr = JSON.stringify(req.body);
+    writeSecureFile('secure_deleted_question_ids.enc', bodyStr);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(bodyStr);
+  } catch (err) {
+    console.error('API Error deleted_question_ids PUT:', err);
+    res.status(500).json({ error: 'Failed to save deleted question IDs' });
+  }
+});
+
+// 6. Question visibility settings (which pool of questions candidates see)
+const DEFAULT_QUESTION_VISIBILITY = JSON.stringify({ mode: 'default', selectedIds: [] });
+
+app.get('/api/question_visibility', (req, res) => {
+  try {
+    const data = readSecureFile('secure_question_visibility.enc', DEFAULT_QUESTION_VISIBILITY);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(data);
+  } catch (err) {
+    console.error('API Error question_visibility GET:', err);
+    res.status(500).json({ error: 'Failed to retrieve question visibility settings' });
+  }
+});
+
+app.put('/api/question_visibility', (req, res) => {
+  try {
+    const bodyStr = JSON.stringify(req.body);
+    writeSecureFile('secure_question_visibility.enc', bodyStr);
+    res.setHeader('Content-Type', 'application/json');
+    res.send(bodyStr);
+  } catch (err) {
+    console.error('API Error question_visibility PUT:', err);
+    res.status(500).json({ error: 'Failed to save question visibility settings' });
+  }
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

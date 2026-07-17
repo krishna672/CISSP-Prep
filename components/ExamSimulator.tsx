@@ -4,7 +4,7 @@ import { Question, LeaderboardEntry } from '../types';
 import { Shield, Clock, BrainCircuit, Loader2, Sparkles, AlertCircle, Trophy, History, RefreshCcw, Activity, GraduationCap, BarChart3, Settings2, Sliders, Download, FileText, CheckCircle2, XCircle, ArrowRight, Gauge, Check, Info } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { questions as staticQuestions } from '../data/questionData';
-import { submitLeaderboardEntryCloud } from './cloudSync';
+import { submitLeaderboardEntryCloud, fetchCustomQuestionsCloud, fetchDeletedQuestionIdsCloud, fetchQuestionVisibilityCloud } from './cloudSync';
 
 
 // Official CISSP Weights (2024 Standard)
@@ -44,11 +44,32 @@ const getCombinedQuestions = (): Question[] => {
     }
   }
 
-  const combined = [...staticQuestions, ...generated];
+  let combined = [...staticQuestions, ...generated];
   if (deletedIds.length > 0) {
     const deletedSet = new Set(deletedIds);
-    return combined.filter(q => !deletedSet.has(q.id));
+    combined = combined.filter(q => !deletedSet.has(q.id));
   }
+
+  // Apply the admin's question visibility setting: which pool candidates
+  // are actually allowed to see (default bank / custom-only / handpicked).
+  const visibilityStored = localStorage.getItem('cissp_question_visibility');
+  if (visibilityStored) {
+    try {
+      const visibility = JSON.parse(visibilityStored);
+      const generatedIds = new Set(generated.map(q => q.id));
+      if (visibility.mode === 'default') {
+        combined = combined.filter(q => !generatedIds.has(q.id));
+      } else if (visibility.mode === 'custom') {
+        combined = combined.filter(q => generatedIds.has(q.id));
+      } else if (visibility.mode === 'selected' && Array.isArray(visibility.selectedIds)) {
+        const selectedSet = new Set(visibility.selectedIds);
+        combined = combined.filter(q => selectedSet.has(q.id));
+      }
+    } catch (e) {
+      console.error("Failed to parse question visibility settings:", e);
+    }
+  }
+
   return combined;
 };
 
@@ -165,6 +186,22 @@ const ExamSimulator: React.FC = () => {
     return localStorage.getItem('cissp_active_engine') || 'gemini-3.5-flash';
   });
   const [usedOfflineFallback, setUsedOfflineFallback] = useState<boolean>(false);
+  const [poolReady, setPoolReady] = useState(false);
+
+  // Refresh the candidate's view of the admin-managed question pool (custom
+  // questions, deleted default questions, and visibility mode) from the
+  // cloud before allowing the CAT exam to start.
+  useEffect(() => {
+    const syncQuestionPool = async () => {
+      await Promise.all([
+        fetchCustomQuestionsCloud(),
+        fetchDeletedQuestionIdsCloud(),
+        fetchQuestionVisibilityCloud(),
+      ]);
+      setPoolReady(true);
+    };
+    syncQuestionPool();
+  }, []);
 
   // REAL EXAM MODE Logic: If 150 items is selected, hide performance metrics
   const isRealExamMode = state.maxItems === 150;
@@ -506,8 +543,16 @@ const ExamSimulator: React.FC = () => {
             )}
           </div>
 
-          <button onClick={startExam} className="w-full py-3.5 sm:py-4 bg-slate-900 text-white rounded-xl sm:rounded-2xl font-black text-base sm:text-lg hover:bg-indigo-600 transition-all flex items-center justify-center gap-3 active:scale-95 shadow-xl group">
-             Initialize Simulation <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+          <button
+            onClick={startExam}
+            disabled={!poolReady}
+            className="w-full py-3.5 sm:py-4 bg-slate-900 text-white rounded-xl sm:rounded-2xl font-black text-base sm:text-lg hover:bg-indigo-600 transition-all flex items-center justify-center gap-3 active:scale-95 shadow-xl group disabled:opacity-50 disabled:cursor-wait disabled:hover:bg-slate-900"
+          >
+            {poolReady ? (
+              <>Initialize Simulation <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" /></>
+            ) : (
+              <><Loader2 className="w-5 h-5 animate-spin" /> Syncing Question Pool...</>
+            )}
           </button>
         </div>
       </div>

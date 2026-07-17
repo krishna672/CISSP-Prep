@@ -1,4 +1,4 @@
-import { InviteCode, LeaderboardEntry } from '../types';
+import { InviteCode, LeaderboardEntry, Question, QuestionVisibilitySettings } from '../types';
 
 const BASE_URL = '/api';
 
@@ -262,6 +262,188 @@ export async function saveAdminPasscodeCloud(passcode: string): Promise<boolean>
     return response.ok;
   } catch (error) {
     console.warn('Cloud Sync: Failed to save admin passcode to cloud.', error);
+    return false;
+  }
+}
+
+// ----------------------------------------------------
+// Cloud Sync: CUSTOM QUESTIONS
+// ----------------------------------------------------
+//
+// Admin-added questions (manual entry / JSON upload) used to live only in
+// the admin's own browser localStorage, which meant candidates on other
+// devices never actually saw them. The cloud store is now the source of
+// truth, same pattern as leaderboard/invite codes above.
+
+export async function fetchCustomQuestionsCloud(): Promise<Question[]> {
+  const localKey = 'cissp_generated_questions';
+
+  try {
+    const response = await fetch(`${BASE_URL}/custom_questions`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (response.ok) {
+      const text = await response.text();
+      if (text && text.trim()) {
+        const cloudQuestions: Question[] = JSON.parse(text);
+        if (Array.isArray(cloudQuestions)) {
+          localStorage.setItem(localKey, JSON.stringify(cloudQuestions));
+          return cloudQuestions;
+        }
+      } else {
+        localStorage.setItem(localKey, JSON.stringify([]));
+        return [];
+      }
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to fetch custom questions. Falling back to offline state.', error);
+  }
+
+  const localData = localStorage.getItem(localKey);
+  if (localData) {
+    try {
+      return JSON.parse(localData);
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+export async function saveCustomQuestionsCloud(questions: Question[]): Promise<boolean> {
+  const localKey = 'cissp_generated_questions';
+  localStorage.setItem(localKey, JSON.stringify(questions));
+
+  try {
+    const response = await fetch(`${BASE_URL}/custom_questions`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(questions)
+    });
+    return response.ok;
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to save custom questions to cloud.', error);
+    return false;
+  }
+}
+
+// ----------------------------------------------------
+// Cloud Sync: DELETED (BLACKLISTED) DEFAULT QUESTION IDS
+// ----------------------------------------------------
+
+export async function fetchDeletedQuestionIdsCloud(): Promise<string[]> {
+  const localKey = 'cissp_deleted_question_ids';
+
+  try {
+    const response = await fetch(`${BASE_URL}/deleted_question_ids`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (response.ok) {
+      const text = await response.text();
+      if (text && text.trim()) {
+        const cloudIds: string[] = JSON.parse(text);
+        if (Array.isArray(cloudIds)) {
+          localStorage.setItem(localKey, JSON.stringify(cloudIds));
+          return cloudIds;
+        }
+      } else {
+        localStorage.setItem(localKey, JSON.stringify([]));
+        return [];
+      }
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to fetch deleted question IDs. Falling back to offline state.', error);
+  }
+
+  const localData = localStorage.getItem(localKey);
+  if (localData) {
+    try {
+      return JSON.parse(localData);
+    } catch (e) {
+      return [];
+    }
+  }
+  return [];
+}
+
+export async function saveDeletedQuestionIdsCloud(ids: string[]): Promise<boolean> {
+  const localKey = 'cissp_deleted_question_ids';
+  localStorage.setItem(localKey, JSON.stringify(ids));
+
+  try {
+    const response = await fetch(`${BASE_URL}/deleted_question_ids`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ids)
+    });
+    return response.ok;
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to save deleted question IDs to cloud.', error);
+    return false;
+  }
+}
+
+// ----------------------------------------------------
+// Cloud Sync: QUESTION VISIBILITY SETTINGS
+// ----------------------------------------------------
+//
+// Controls which pool of questions candidates see in Practice Quiz /
+// Adaptive CAT: the default static bank, only admin-added custom
+// questions, or a hand-picked selection of specific question IDs.
+
+const DEFAULT_VISIBILITY: QuestionVisibilitySettings = { mode: 'default', selectedIds: [] };
+
+export async function fetchQuestionVisibilityCloud(): Promise<QuestionVisibilitySettings> {
+  const localKey = 'cissp_question_visibility';
+
+  try {
+    const response = await fetch(`${BASE_URL}/question_visibility`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (response.ok) {
+      const text = await response.text();
+      if (text && text.trim()) {
+        const settings: QuestionVisibilitySettings = JSON.parse(text);
+        if (settings && typeof settings.mode === 'string' && Array.isArray(settings.selectedIds)) {
+          localStorage.setItem(localKey, JSON.stringify(settings));
+          return settings;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to fetch question visibility settings. Falling back to offline state.', error);
+  }
+
+  const localData = localStorage.getItem(localKey);
+  if (localData) {
+    try {
+      return JSON.parse(localData);
+    } catch (e) {
+      return DEFAULT_VISIBILITY;
+    }
+  }
+  return DEFAULT_VISIBILITY;
+}
+
+export async function saveQuestionVisibilityCloud(settings: QuestionVisibilitySettings): Promise<boolean> {
+  const localKey = 'cissp_question_visibility';
+  localStorage.setItem(localKey, JSON.stringify(settings));
+
+  try {
+    const response = await fetch(`${BASE_URL}/question_visibility`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    return response.ok;
+  } catch (error) {
+    console.warn('Cloud Sync: Failed to save question visibility settings to cloud.', error);
     return false;
   }
 }

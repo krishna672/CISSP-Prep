@@ -2,11 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   Key, Shield, Users, Trash2, PlusCircle, Copy, Check, 
   Settings, Lock, KeyRound, AlertTriangle, RefreshCw, Eye, EyeOff,
-  Brain, Sparkles, Save, BookOpen, Award, AlertCircle, HelpCircle, Dices, ChevronDown, CheckCircle2, ListChecks,
+  Save, BookOpen, Award, AlertCircle, HelpCircle, ChevronDown, CheckCircle2, ListChecks,
   Trophy, Upload, Download, Search, Calendar, FileText, Link
 } from 'lucide-react';
-import { GoogleGenAI, Type } from "@google/genai";
-import { Question, InviteCode } from '../types';
+import { Question, InviteCode, QuestionVisibilitySettings } from '../types';
 import { questions as staticQuestions } from '../data/questionData';
 import { 
   fetchInviteCodesCloud, 
@@ -16,7 +15,13 @@ import {
   generateSignature, 
   encodeNameForCode,
   fetchAdminPasscodeCloud,
-  saveAdminPasscodeCloud
+  saveAdminPasscodeCloud,
+  fetchCustomQuestionsCloud,
+  saveCustomQuestionsCloud,
+  fetchDeletedQuestionIdsCloud,
+  saveDeletedQuestionIdsCloud,
+  fetchQuestionVisibilityCloud,
+  saveQuestionVisibilityCloud
 } from './cloudSync';
 
 const DEFAULT_ADMIN_PASSCODE = 'ADMIN2026';
@@ -33,7 +38,7 @@ const DOMAINS_LIST = [
 ];
 
 const AdminPanel: React.FC = () => {
-  const [adminTab, setAdminTab] = useState<'invite' | 'ai-studio' | 'manual-studio' | 'leaderboard' | 'json-upload' | 'manage-questions'>('invite');
+  const [adminTab, setAdminTab] = useState<'invite' | 'manual-studio' | 'leaderboard' | 'json-upload' | 'manage-questions'>('invite');
   const [inviteCodes, setInviteCodes] = useState<InviteCode[]>([]);
 
   // Deleted/Blacklisted static questions
@@ -83,18 +88,12 @@ const AdminPanel: React.FC = () => {
   const [passcodeSuccess, setPasscodeSuccess] = useState('');
   const [showAdminCode, setShowAdminCode] = useState(false);
 
-  // AI Question Studio States
-  const [selectedDomain, setSelectedDomain] = useState<string>('Domain 1: Security and Risk Management');
-  const [selectedDifficulty, setSelectedDifficulty] = useState<'Basic' | 'Moderate' | 'Hard'>('Moderate');
-  const [subdomainInput, setSubdomainInput] = useState<string>('');
-  const [customPrompt, setCustomPrompt] = useState<string>('');
-  const [isGeneratingQuestion, setIsGeneratingQuestion] = useState<boolean>(false);
-  const [generatedQuestions, setGeneratedQuestions] = useState<Question[]>([]);
-  const [selectedEngine, setSelectedEngine] = useState<string>('gemini-3.5-flash');
-  const [numQuestions, setNumQuestions] = useState<number>(1);
-  const [generationError, setGenerationError] = useState<string>('');
   const [generatedPool, setGeneratedPool] = useState<Question[]>([]);
-  const [testAnswers, setTestAnswers] = useState<Record<string, string>>({});
+
+  // Question visibility settings (controls what candidates actually see)
+  const [questionVisibility, setQuestionVisibility] = useState<QuestionVisibilitySettings>({ mode: 'default', selectedIds: [] });
+  const [visibilitySaving, setVisibilitySaving] = useState(false);
+  const [visibilitySuccess, setVisibilitySuccess] = useState(false);
 
   // Manual Custom Question States
   const [manualDomain, setManualDomain] = useState<string>('Domain 1: Security and Risk Management');
@@ -113,9 +112,10 @@ const AdminPanel: React.FC = () => {
   const [manualError, setManualError] = useState<string>('');
   const [manualSuccess, setManualSuccess] = useState<string>('');
 
-  // Load invite codes, admin passcode, and generated questions pool
+  // Load invite codes, admin passcode, custom question pool, deleted
+  // question IDs, and question visibility settings -- all from the cloud so
+  // this reflects the real shared state, not just this browser's cache.
   useEffect(() => {
-    // Load and sync admin passcode & invite codes from cloud
     const loadCodes = async () => {
       const syncedAdminPass = await fetchAdminPasscodeCloud(DEFAULT_ADMIN_PASSCODE);
       setAdminPasscode(syncedAdminPass);
@@ -125,15 +125,17 @@ const AdminPanel: React.FC = () => {
     };
     loadCodes();
 
-    // Generated Questions Pool
-    const storedPool = localStorage.getItem('cissp_generated_questions');
-    if (storedPool) {
-      try {
-        setGeneratedPool(JSON.parse(storedPool));
-      } catch (e) {
-        console.error("Failed to parse stored generated questions:", e);
-      }
-    }
+    const loadQuestionData = async () => {
+      const [customQuestions, deletedIds, visibility] = await Promise.all([
+        fetchCustomQuestionsCloud(),
+        fetchDeletedQuestionIdsCloud(),
+        fetchQuestionVisibilityCloud(),
+      ]);
+      setGeneratedPool(customQuestions);
+      setDeletedStaticIds(deletedIds);
+      setQuestionVisibility(visibility);
+    };
+    loadQuestionData();
   }, []);
 
   // Load leaderboard whenever adminTab switches to 'leaderboard'
@@ -273,18 +275,8 @@ const AdminPanel: React.FC = () => {
           return;
         }
 
-        // Load existing custom pool to append
-        const storedPool = localStorage.getItem('cissp_generated_questions');
-        let currentPool: Question[] = [];
-        if (storedPool) {
-          try {
-            currentPool = JSON.parse(storedPool);
-          } catch (err) {
-            currentPool = [];
-          }
-        }
-
-        const mergedPool = [...currentPool];
+        // Merge into the existing (cloud-synced) custom pool
+        const mergedPool = [...generatedPool];
         let dupCount = 0;
         validatedQuestions.forEach(q => {
           if (mergedPool.some(existing => existing.id === q.id || (existing.stem === q.stem && existing.domain === q.domain))) {
@@ -294,8 +286,8 @@ const AdminPanel: React.FC = () => {
           mergedPool.push(q);
         });
 
-        localStorage.setItem('cissp_generated_questions', JSON.stringify(mergedPool));
         setGeneratedPool(mergedPool);
+        saveCustomQuestionsCloud(mergedPool);
         setJsonUploadSuccess(`Successfully imported ${validatedQuestions.length} custom questions in bulk! (Assigned unique IDs to ${dupCount} potential duplicates).`);
       } catch (err) {
         setJsonUploadError('Failed to parse JSON file. Verify that it is clean, valid, and contains no trailing commas.');
@@ -454,166 +446,10 @@ const AdminPanel: React.FC = () => {
     }
   };
 
-  // AI Question Generation Lab
-  const handleGenerateQuestion = async () => {
-    setIsGeneratingQuestion(true);
-    setGenerationError('');
-    setGeneratedQuestions([]);
-    setTestAnswers({});
-
-    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      setGenerationError("Google Gemini API Key is not configured. Please define GEMINI_API_KEY in the workspace environment settings.");
-      setIsGeneratingQuestion(false);
-      return;
-    }
-
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      
-      const prompt = `
-        You are a senior ISC2 CISSP Psychometrician and Lead Exam Architect.
-        Generate exactly ${numQuestions} highly realistic, professionally challenging CISSP exam question(s) of ${selectedDifficulty} difficulty targeting CISSP ${selectedDomain}.
-        ${subdomainInput ? `Focus on Subdomain topic: "${subdomainInput}".` : ''}
-        ${customPrompt ? `Incorporate this custom scenario/guidance: "${customPrompt}".` : ''}
-        
-        Guidelines for each question:
-        - The question stem must be written in the scenario-based, conceptual, or executive management decision style of the actual CISSP exam.
-        - Options must include four highly plausible professional options (A, B, C, D).
-        - One option must be unequivocally correct according to standard ISC2/CISSP CBK consensus.
-        - The explanation must be detailed, justifying the correct option AND explaining why each other option (distractor) is incorrect or less optimal in an enterprise management context.
-        - Ensure variety in the scenarios and correct answers if multiple questions are being generated.
-      `;
-
-      const response = await ai.models.generateContent({
-        model: selectedEngine,
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            description: `An array of exactly ${numQuestions} generated CISSP questions.`,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING, description: "Unique generated ID, e.g. gen-12345" },
-                domain: { type: Type.STRING, description: "The exact CISSP domain name" },
-                subdomain: { type: Type.STRING, description: "Subdomain or concept name" },
-                difficulty: { type: Type.STRING, description: "Basic, Moderate, or Hard" },
-                stem: { type: Type.STRING, description: "The scenario-based question stem" },
-                options: {
-                  type: Type.OBJECT,
-                  properties: {
-                    A: { type: Type.STRING },
-                    B: { type: Type.STRING },
-                    C: { type: Type.STRING },
-                    D: { type: Type.STRING },
-                  },
-                  required: ["A", "B", "C", "D"],
-                },
-                correctOption: { type: Type.STRING, description: "Exactly one uppercase character: A, B, C, or D" },
-                explanation: { type: Type.STRING, description: "Detailed psychometric explanation" },
-                primaryConcepts: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING }
-                },
-                references: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      title: { type: Type.STRING },
-                      url: { type: Type.STRING },
-                      accessed: { type: Type.STRING }
-                    },
-                    required: ["title"]
-                  }
-                }
-              },
-              required: ["id", "domain", "subdomain", "difficulty", "stem", "options", "correctOption", "explanation"]
-            }
-          }
-        }
-      });
-
-      const text = response.text || '';
-      let parsed = JSON.parse(text);
-      
-      if (!Array.isArray(parsed)) {
-        if (typeof parsed === 'object' && parsed !== null) {
-          parsed = [parsed];
-        } else {
-          throw new Error("Generated response is not a valid question array.");
-        }
-      }
-      
-      // Ensure IDs are unique and fields are populated
-      const updatedQuestions = parsed.map((q: any, idx: number) => ({
-        ...q,
-        id: q.id || `gen-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
-        domain: q.domain || selectedDomain,
-        difficulty: q.difficulty || selectedDifficulty,
-        subdomain: q.subdomain || subdomainInput || 'Security Architecture',
-      }));
-
-      // Validate structure
-      for (const q of updatedQuestions) {
-        if (!q.stem || !q.options || !q.correctOption || !q.explanation) {
-          throw new Error("One or more generated questions has an invalid structure.");
-        }
-      }
-
-      setGeneratedQuestions(updatedQuestions);
-    } catch (e: any) {
-      console.error(e);
-      setGenerationError(e?.message || "AI Generation failed. Please try again or check the API key.");
-    } finally {
-      setIsGeneratingQuestion(false);
-    }
-  };
-
-  const handleSaveSingleQuestion = (question: Question) => {
-    const updated = [question, ...generatedPool];
-    localStorage.setItem('cissp_generated_questions', JSON.stringify(updated));
-    setGeneratedPool(updated);
-    
-    // Remove from draft list
-    setGeneratedQuestions(prev => prev.filter(q => q.id !== question.id));
-    setTestAnswers(prev => {
-      const copy = { ...prev };
-      delete copy[question.id];
-      return copy;
-    });
-  };
-
-  const handleSaveAllQuestions = () => {
-    if (generatedQuestions.length === 0) return;
-    const updated = [...generatedQuestions, ...generatedPool];
-    localStorage.setItem('cissp_generated_questions', JSON.stringify(updated));
-    setGeneratedPool(updated);
-    setGeneratedQuestions([]);
-    setTestAnswers({});
-    alert(`Successfully saved all ${generatedQuestions.length} questions to practice and adaptive CAT pool!`);
-  };
-
-  const handleDiscardSingleQuestion = (questionId: string) => {
-    setGeneratedQuestions(prev => prev.filter(q => q.id !== questionId));
-    setTestAnswers(prev => {
-      const copy = { ...prev };
-      delete copy[questionId];
-      return copy;
-    });
-  };
-
-  const handleDiscardAllQuestions = () => {
-    setGeneratedQuestions([]);
-    setTestAnswers({});
-  };
-
   const handleDeleteQuestion = (id: string) => {
     const updated = generatedPool.filter(q => q.id !== id);
-    localStorage.setItem('cissp_generated_questions', JSON.stringify(updated));
     setGeneratedPool(updated);
+    saveCustomQuestionsCloud(updated);
   };
 
   const handleManageDeleteQuestion = (q: Question) => {
@@ -622,8 +458,8 @@ const AdminPanel: React.FC = () => {
       handleDeleteQuestion(q.id);
     } else {
       const updated = [...deletedStaticIds, q.id];
-      localStorage.setItem('cissp_deleted_question_ids', JSON.stringify(updated));
       setDeletedStaticIds(updated);
+      saveDeletedQuestionIdsCloud(updated);
     }
   };
 
@@ -633,11 +469,41 @@ const AdminPanel: React.FC = () => {
       setTimeout(() => setPendingRestore(false), 4000);
       return;
     }
-    localStorage.removeItem('cissp_deleted_question_ids');
     setDeletedStaticIds([]);
+    saveDeletedQuestionIdsCloud([]);
     setPendingRestore(false);
     setRestoreSuccess(true);
     setTimeout(() => setRestoreSuccess(false), 4000);
+  };
+
+  // Question visibility controls -- what pool of questions candidates
+  // actually see in Practice Quiz / Adaptive CAT.
+  const handleSetVisibilityMode = (mode: QuestionVisibilitySettings['mode']) => {
+    setQuestionVisibility(prev => ({ ...prev, mode }));
+    setVisibilitySuccess(false);
+  };
+
+  const handleToggleQuestionSelected = (id: string) => {
+    setQuestionVisibility(prev => {
+      const alreadySelected = prev.selectedIds.includes(id);
+      return {
+        ...prev,
+        selectedIds: alreadySelected
+          ? prev.selectedIds.filter(sid => sid !== id)
+          : [...prev.selectedIds, id],
+      };
+    });
+    setVisibilitySuccess(false);
+  };
+
+  const handleSaveVisibilitySettings = async () => {
+    setVisibilitySaving(true);
+    const ok = await saveQuestionVisibilityCloud(questionVisibility);
+    setVisibilitySaving(false);
+    if (ok) {
+      setVisibilitySuccess(true);
+      setTimeout(() => setVisibilitySuccess(false), 4000);
+    }
   };
 
   const handleCreateManualQuestion = (e: React.FormEvent) => {
@@ -696,8 +562,8 @@ const AdminPanel: React.FC = () => {
     };
 
     const updated = [newQuestion, ...generatedPool];
-    localStorage.setItem('cissp_generated_questions', JSON.stringify(updated));
     setGeneratedPool(updated);
+    saveCustomQuestionsCloud(updated);
 
     // Reset inputs
     setManualStem('');
@@ -761,22 +627,6 @@ const AdminPanel: React.FC = () => {
           >
             <Users className="w-3.5 h-3.5 text-indigo-500" />
             Invite Keys
-          </button>
-          <button
-            onClick={() => setAdminTab('ai-studio')}
-            className={`flex-1 py-2.5 px-3 rounded-xl text-[10px] sm:text-xs font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1.5 ${
-              adminTab === 'ai-studio' 
-                ? 'bg-white text-indigo-600 shadow-md border-b-2 border-indigo-500/20' 
-                : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100/60'
-            }`}
-          >
-            <Brain className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
-            AI Lab
-            {generatedPool.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[9px] font-black rounded border border-indigo-100">
-                {generatedPool.length}
-              </span>
-            )}
           </button>
           <button
             onClick={() => setAdminTab('manual-studio')}
@@ -1119,362 +969,6 @@ const AdminPanel: React.FC = () => {
 
             </div>
 
-          </div>
-        ) : adminTab === 'ai-studio' ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in duration-300">
-            {/* Column 1 & 2: Generation Setup & Preview */}
-            <div className="lg:col-span-2 space-y-8">
-              
-              {/* Question Config Form */}
-              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-6">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
-                    <Sparkles className="w-5 h-5 text-indigo-500 animate-pulse" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">AI Question Generation Lab</h3>
-                    <p className="text-[11px] text-slate-500 font-medium">Fine-tune domain criteria and custom prompt parameters to generate professional CISSP questions.</p>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">Target CISSP Domain</label>
-                      <select
-                        value={selectedDomain}
-                        onChange={(e) => setSelectedDomain(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-800 text-xs font-bold outline-none cursor-pointer focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
-                      >
-                        {DOMAINS_LIST.map((domain) => (
-                          <option key={domain} value={domain}>{domain}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">Difficulty Calibration</label>
-                      <div className="flex p-1 bg-slate-50 rounded-xl gap-1 border border-slate-200">
-                        {['Basic', 'Moderate', 'Hard'].map((diff) => (
-                          <button
-                            key={diff}
-                            type="button"
-                            onClick={() => setSelectedDifficulty(diff as any)}
-                            className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
-                              selectedDifficulty === diff 
-                                ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' 
-                                : 'text-slate-500 hover:text-slate-800'
-                            }`}
-                          >
-                            {diff}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">AI Agent/Engine</label>
-                      <select
-                        value={selectedEngine}
-                        onChange={(e) => setSelectedEngine(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-slate-800 text-xs font-bold outline-none cursor-pointer focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
-                      >
-                        <option value="gemini-3.5-flash">Gemini 3.5 Flash (Balanced & Fast)</option>
-                        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Analytical & Deep Reasoning)</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">Number of Questions</label>
-                      <div className="flex p-1 bg-slate-50 rounded-xl gap-1 border border-slate-200">
-                        {[1, 2, 3, 4, 5].map((num) => (
-                          <button
-                            key={num}
-                            type="button"
-                            onClick={() => setNumQuestions(num)}
-                            className={`flex-1 py-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
-                              numQuestions === num 
-                                ? 'bg-white text-indigo-600 shadow-sm border border-slate-200/50' 
-                                : 'text-slate-500 hover:text-slate-800'
-                            }`}
-                          >
-                            {num} {num === 1 ? 'Q' : 'Qs'}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">Target Subdomain Topic (Optional)</label>
-                    <input
-                      type="text"
-                      placeholder="E.G., CRYPTOGRAPHY, RISK MANAGEMENT, BCP/DRP"
-                      value={subdomainInput}
-                      onChange={(e) => setSubdomainInput(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-4 py-3 text-xs text-slate-900 transition-all uppercase outline-none"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">Custom Guidance / Scenario Prompt (Optional)</label>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const topics = [
-                            "Contrast Quantitative vs Qualitative risk analysis with a focus on SLE/ALE calculations.",
-                            "Focus on Bell-LaPadula Simple Security Property vs *-Property with practical access control decisions.",
-                            "Create a business continuity crisis involving hot site transition failure due to network bandwidth saturation.",
-                            "Kerberos Ticket Granting Server (TGS) authentication flow vulnerability context.",
-                            "Evaluate a development project shifting to DevSecOps, deciding where to inject SAST vs DAST tools.",
-                            "Explain OAuth 2.0 grant types in a mobile client architecture scenario."
-                          ];
-                          const randomTopic = topics[Math.floor(Math.random() * topics.length)];
-                          setCustomPrompt(randomTopic);
-                        }}
-                        className="text-[9px] font-black text-indigo-500 hover:text-indigo-600 uppercase tracking-wider flex items-center gap-1"
-                      >
-                        <Dices className="w-3.5 h-3.5" /> Auto-Suggest Topic
-                      </button>
-                    </div>
-                    <textarea
-                      rows={3}
-                      placeholder="E.G., FOCUS ON EXPLAINING EXCLUSIVELY WHY THE PRINCIPLE OF LEAST PRIVILEGE PREVENTS LATER PRIVILEGE ESCALATION."
-                      value={customPrompt}
-                      onChange={(e) => setCustomPrompt(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-4 py-3 text-xs text-slate-900 transition-all outline-none resize-none"
-                    />
-                  </div>
-
-                  {generationError && (
-                    <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-start gap-2.5">
-                      <AlertCircle className="w-4.5 h-4.5 text-rose-600 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="text-xs font-black text-rose-800 uppercase tracking-wider">AI Generation Error</p>
-                        <p className="text-xs text-rose-700 leading-relaxed mt-0.5">{generationError}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleGenerateQuestion}
-                    disabled={isGeneratingQuestion}
-                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-md shadow-indigo-100 flex items-center justify-center gap-2"
-                  >
-                    {isGeneratingQuestion ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        Generating Question via Gemini...
-                      </>
-                    ) : (
-                      <>
-                        <Brain className="w-4 h-4" />
-                        Generate Custom Question with Gemini AI
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              {/* LIVE PREVIEW OF GENERATED QUESTIONS BATCH */}
-              {generatedQuestions.length > 0 && (
-                <div className="space-y-6">
-                  <div className="bg-slate-900 text-white rounded-3xl p-5 border border-slate-800 flex items-center justify-between shadow-md">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-5 h-5 text-indigo-400 animate-pulse" />
-                      <div>
-                        <h4 className="text-xs font-black uppercase tracking-widest text-slate-200">AI Generated Batch Drafts</h4>
-                        <p className="text-[10px] text-slate-400 font-medium">Verify each question below before deploying them to the candidate exam pool.</p>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={handleSaveAllQuestions}
-                        className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-black uppercase tracking-wider rounded-xl transition-all shadow-md shadow-emerald-950/20 flex items-center gap-1.5"
-                      >
-                        <Save className="w-3.5 h-3.5" />
-                        Save All ({generatedQuestions.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleDiscardAllQuestions}
-                        className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-black uppercase tracking-wider rounded-xl transition-all border border-slate-700/50"
-                      >
-                        Discard All
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-4">
-                    {generatedQuestions.map((question, index) => {
-                      const testAnswer = testAnswers[question.id];
-                      return (
-                        <div key={question.id} className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-6 animate-in zoom-in-95 duration-200">
-                          <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-                            <div className="flex items-center gap-2">
-                              <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-lg text-[9px] font-black uppercase tracking-wider border border-emerald-100">
-                                Draft #{index + 1}
-                              </span>
-                              <span className="px-2.5 py-1 bg-indigo-50 text-indigo-700 rounded-lg text-[9px] font-black uppercase tracking-wider border border-indigo-100">
-                                {question.difficulty}
-                              </span>
-                            </div>
-                            <span className="text-[10px] font-mono text-slate-400">
-                              ID: {question.id}
-                            </span>
-                          </div>
-
-                          <div className="space-y-4">
-                            <span className="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[9px] font-black uppercase tracking-widest inline-block">
-                              {question.domain} • {question.subdomain}
-                            </span>
-                            <h4 className="text-sm sm:text-base font-bold text-slate-800 leading-relaxed">
-                              {question.stem}
-                            </h4>
-
-                            {/* Interactive Options Preview */}
-                            <div className="space-y-2.5">
-                              {Object.entries(question.options).map(([key, value]) => {
-                                const isCorrect = key === question.correctOption;
-                                const isSelected = key === testAnswer;
-                                
-                                let optionStyle = "border-slate-200 hover:bg-slate-50 text-slate-700";
-                                if (testAnswer) {
-                                  if (isCorrect) {
-                                    optionStyle = "border-emerald-500 bg-emerald-50 text-emerald-900";
-                                  } else if (isSelected) {
-                                    optionStyle = "border-rose-500 bg-rose-50 text-rose-900";
-                                  } else {
-                                    optionStyle = "border-slate-100 opacity-60 text-slate-400";
-                                  }
-                                }
-
-                                return (
-                                  <button
-                                    key={key}
-                                    type="button"
-                                    onClick={() => {
-                                      if (!testAnswer) {
-                                        setTestAnswers(prev => ({
-                                          ...prev,
-                                          [question.id]: key
-                                        }));
-                                      }
-                                    }}
-                                    className={`w-full text-left p-3.5 rounded-xl border text-xs font-bold transition-all flex gap-3 items-center ${optionStyle}`}
-                                  >
-                                    <span className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs border shrink-0 ${
-                                      testAnswer
-                                        ? isCorrect
-                                          ? 'bg-emerald-500 border-emerald-500 text-white'
-                                          : isSelected
-                                            ? 'bg-rose-500 border-rose-500 text-white'
-                                            : 'bg-slate-100 border-slate-200 text-slate-400'
-                                        : 'bg-slate-50 border-slate-200 text-slate-600'
-                                    }`}>
-                                      {key}
-                                    </span>
-                                    <span>{value}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-
-                            {/* Explanation */}
-                            {testAnswer && (
-                              <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl space-y-2 animate-in fade-in">
-                                <div className="flex items-center gap-1.5 text-indigo-700">
-                                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                                  <span className="text-[10px] font-black uppercase tracking-wider">EXPLANATION RATIONALE</span>
-                                </div>
-                                <p className="text-slate-700 text-xs leading-relaxed font-semibold">
-                                  {question.explanation}
-                                </p>
-                              </div>
-                            )}
-
-                            <div className="flex gap-3 border-t border-slate-100 pt-5">
-                              <button
-                                type="button"
-                                onClick={() => handleSaveSingleQuestion(question)}
-                                className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black uppercase tracking-widest transition-all shadow-md shadow-emerald-100 flex items-center justify-center gap-2"
-                              >
-                                <Save className="w-3.5 h-3.5" />
-                                Save & Deploy
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDiscardSingleQuestion(question.id)}
-                                className="px-5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 border border-slate-200 rounded-xl text-xs font-bold uppercase tracking-wider transition-all"
-                              >
-                                Discard
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Column 3: Custom Question Registry & Summary */}
-            <div className="space-y-8">
-              
-              {/* Question Pool Stats */}
-              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
-                    <BookOpen className="w-5 h-5 text-indigo-600" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">Custom Question Bank</h3>
-                    <p className="text-[11px] text-slate-500 font-medium">Monitoring metrics for injected study metrics.</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 pt-2">
-                  <div className="bg-slate-50 p-3 rounded-2xl text-center border border-slate-100">
-                    <span className="text-2xl font-black text-indigo-600 font-mono">
-                      {generatedPool.length}
-                    </span>
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">GENERATED</p>
-                  </div>
-                  <div className="bg-emerald-50 p-3 rounded-2xl text-center border border-emerald-100">
-                    <span className="text-2xl font-black text-emerald-600 font-mono">
-                      {staticQuestions.length + generatedPool.length}
-                    </span>
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-0.5">ACTIVE TOTAL</p>
-                  </div>
-                </div>
-
-                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-tight leading-relaxed pt-2">
-                  • Deployed questions are automatically integrated into both **Practice quizzes** and the **Adaptive CAT algorithm** for all users taking exams on the local offline engine!
-                </div>
-              </div>
-
-              {/* Active Custom Pool Registry */}
-              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-4">
-                <h3 className="text-xs font-black text-slate-900 uppercase tracking-widest">Active Custom Questions ({generatedPool.length})</h3>
-                
-                <div className="divide-y divide-slate-100 max-h-[350px] overflow-y-auto pr-1">
-                  {generatedPool.length === 0 ? (
-                    <div className="text-center py-12 text-slate-400 text-xs">
-                      No custom questions generated yet. Use the lab to build and save questions!
-                    </div>
-                  ) : (
-                    generatedPool.map((q) => <QuestionListItem key={q.id} q={q} onDelete={handleDeleteQuestion} />)
-                  )}
-                </div>
-              </div>
-
-            </div>
           </div>
         ) : adminTab === 'manual-studio' ? (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in duration-300">
@@ -2154,6 +1648,84 @@ const AdminPanel: React.FC = () => {
               )}
             </div>
 
+            {/* Question Visibility Controls */}
+            <div className="bg-indigo-50/50 border border-indigo-100 rounded-2xl p-5 space-y-4">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h4 className="text-xs font-black text-indigo-900 uppercase tracking-wider flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5" />
+                    Candidate Question Pool
+                  </h4>
+                  <p className="text-[11px] text-indigo-700/80 font-medium mt-1 max-w-xl">
+                    Control exactly which questions candidates see in Practice Quiz and Adaptive CAT.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveVisibilitySettings}
+                  disabled={visibilitySaving}
+                  className={`px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 shrink-0 ${
+                    visibilitySuccess
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-60'
+                  }`}
+                >
+                  {visibilitySaving ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : visibilitySuccess ? (
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5" />
+                  )}
+                  {visibilitySaving ? 'Saving...' : visibilitySuccess ? 'Saved!' : 'Save Pool Settings'}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {([
+                  { key: 'default' as const, label: 'Default Question Bank', desc: 'Only the built-in curriculum questions.' },
+                  { key: 'custom' as const, label: 'Custom Questions Only', desc: 'Only admin-added questions.' },
+                  { key: 'selected' as const, label: 'Handpicked Selection', desc: 'Only the specific questions you check below.' },
+                ]).map(opt => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => handleSetVisibilityMode(opt.key)}
+                    className={`text-left p-3.5 rounded-xl border transition-all cursor-pointer ${
+                      questionVisibility.mode === opt.key
+                        ? 'bg-white border-indigo-400 shadow-sm ring-1 ring-indigo-400'
+                        : 'bg-white/60 border-indigo-100 hover:border-indigo-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                        questionVisibility.mode === opt.key ? 'border-indigo-600' : 'border-slate-300'
+                      }`}>
+                        {questionVisibility.mode === opt.key && <span className="w-1.5 h-1.5 rounded-full bg-indigo-600" />}
+                      </span>
+                      <span className="text-[11px] font-black text-slate-800">{opt.label}</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 font-medium mt-1 pl-5">{opt.desc}</p>
+                  </button>
+                ))}
+              </div>
+
+              {questionVisibility.mode === 'selected' && (
+                <div className="flex items-center justify-between gap-3 pt-1 border-t border-indigo-100/70 text-[10px] font-bold text-indigo-800 uppercase tracking-wider">
+                  <span>{questionVisibility.selectedIds.length} question{questionVisibility.selectedIds.length === 1 ? '' : 's'} selected</span>
+                  {questionVisibility.selectedIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => { setQuestionVisibility(prev => ({ ...prev, selectedIds: [] })); setVisibilitySuccess(false); }}
+                      className="text-rose-600 hover:text-rose-700 cursor-pointer"
+                    >
+                      Clear All
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Metrics Overview */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-200/50">
               <div className="text-center p-3">
@@ -2282,6 +1854,9 @@ const AdminPanel: React.FC = () => {
                           key={q.id} 
                           q={q as any} 
                           onDelete={() => handleManageDeleteQuestion(q)} 
+                          selectable={questionVisibility.mode === 'selected'}
+                          isSelected={questionVisibility.selectedIds.includes(q.id)}
+                          onToggleSelect={() => handleToggleQuestionSelected(q.id)}
                         />
                       ))}
                     </div>
@@ -2379,7 +1954,13 @@ const QuestionListItem: React.FC<{ q: Question; onDelete: (id: string) => void }
 };
 
 // Extracted card sub-component for the primary Question Bank manager view
-const ManageQuestionCard: React.FC<{ q: Question & { isCustom: boolean }; onDelete: () => void }> = ({ q, onDelete }) => {
+const ManageQuestionCard: React.FC<{
+  q: Question & { isCustom: boolean };
+  onDelete: () => void;
+  selectable?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
+}> = ({ q, onDelete, selectable, isSelected, onToggleSelect }) => {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
@@ -2403,8 +1984,20 @@ const ManageQuestionCard: React.FC<{ q: Question & { isCustom: boolean }; onDele
   };
 
   return (
-    <div className="p-5 hover:bg-slate-50/50 transition-colors">
+    <div className={`p-5 hover:bg-slate-50/50 transition-colors ${selectable && isSelected ? 'bg-indigo-50/50' : ''}`}>
       <div className="flex items-start justify-between gap-4">
+        {selectable && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleSelect && onToggleSelect(); }}
+            className={`mt-0.5 w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
+              isSelected ? 'bg-indigo-600 border-indigo-600' : 'bg-white border-slate-300 hover:border-indigo-400'
+            }`}
+            aria-label={isSelected ? 'Deselect question' : 'Select question'}
+          >
+            {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+          </button>
+        )}
         <div className="space-y-2 flex-1 min-w-0">
           {/* Tags bar */}
           <div className="flex flex-wrap items-center gap-1.5">

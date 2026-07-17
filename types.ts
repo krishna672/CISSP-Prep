@@ -76,3 +76,12 @@ export interface LeaderboardEntry {
   timestamp: string;
   passed: boolean;
 }
+
+// Controls which questions candidates see in Practice Quiz / Adaptive CAT:
+// - 'default': only the built-in static question bank
+// - 'custom': only admin-added custom questions (manual entry / JSON upload)
+// - 'selected': only the specific question IDs the admin hand-picked
+export interface QuestionVisibilitySettings {
+  mode: 'default' | 'custom' | 'selected';
+  selectedIds: string[];
+}
